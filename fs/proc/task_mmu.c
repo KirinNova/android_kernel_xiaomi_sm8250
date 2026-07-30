@@ -370,9 +370,6 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma)
 	unsigned long start, end;
 	dev_t dev = 0;
 	const char *name = NULL;
-#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-	char *spoofed_redirected_name = NULL;
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 
 	if (file) {
 		struct inode *inode = file_inode(vma->vm_file);
