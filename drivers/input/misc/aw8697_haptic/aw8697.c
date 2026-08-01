@@ -30,6 +30,7 @@
 #include <asm/uaccess.h>
 #include <linux/syscalls.h>
 #include <linux/power_supply.h>
+#include <linux/leds.h>
 #include <linux/vmalloc.h>
 #include <linux/pm_qos.h>
 #include <linux/string.h>
@@ -1959,7 +1960,7 @@ static int aw8697_haptic_rtp_init(struct aw8697 *aw8697)
 	while ((!aw8697_haptic_rtp_get_fifo_afi(aw8697)) &&
 	       (aw8697->play_mode == AW8697_HAPTIC_RTP_MODE) &&
 	       !atomic_read(&aw8697->exit_in_rtp_loop)) {
-		if (aw8697->is_custom_wave == 0) {
+		if (aw8697->is_custom_wave == 0 && !aw8697->flyme_rtp_override) {
 			if (rtp_start) {
 				if ((aw8697_rtp->len - aw8697->rtp_cnt) <
 				    aw8697->ram.base_addr)
@@ -2624,7 +2625,7 @@ static void aw8697_rtp_work_routine(struct work_struct *work)
 		aw8697_haptic_effect_strength(aw8697);
 		aw8697_haptic_set_gain(aw8697, aw8697->level);
 		aw8697->rtp_init = 0;
-		if (aw8697->is_custom_wave == 0) {
+		if (aw8697->is_custom_wave == 0 && !aw8697->flyme_rtp_override) {
 			aw8697->rtp_file_num = aw8697->effect_id -
 					       aw8697->info.effect_id_boundary;
 			printk("%s: aw8697->rtp_file_num =%d\n", __func__,
@@ -6647,6 +6648,130 @@ static struct attribute_group aw869xx_vibrator_attribute_group = {
 	.attrs = aw869xx_vibrator_attributes
 };
 
+#ifdef CONFIG_AW8697_FLYME_COMPAT
+static struct class *aw8697_flyme_class;
+static struct class *aw8697_flyme_timed_class;
+static struct led_classdev aw8697_flyme_led;
+
+static ssize_t aw8697_flyme_activate(struct device *d, struct device_attribute *a, const char *b, size_t n)
+{
+	struct aw8697 *h = dev_get_drvdata(d);
+	unsigned int id;
+	if (kstrtouint(b, 0, &id))
+		return -EINVAL;
+	if (id > 1) {
+		mutex_lock(&h->lock);
+		if (h->info.effect_id_boundary && id > h->info.effect_id_boundary) {
+			h->activate_mode = AW8697_HAPTIC_ACTIVATE_RTP_MODE;
+			h->rtp_file_num = id % (sizeof(aw8697_rtp_name) / AW8697_RTP_NAME_MAX);
+			h->flyme_rtp_override = 1;
+		} else {
+			if (h->info.effect_id_boundary)
+				id %= h->info.effect_id_boundary + 1;
+			h->activate_mode = AW8697_HAPTIC_ACTIVATE_RAM_MODE;
+			h->flyme_rtp_override = 0;
+		}
+		h->effect_id = id;
+		h->state = 1;
+		mutex_unlock(&h->lock);
+		if (h->activate_mode == AW8697_HAPTIC_ACTIVATE_RTP_MODE) {
+			queue_work(h->work_queue, &h->rtp_work);
+			return n;
+		}
+		return aw8697_activate_store(d, a, "1", 1);
+	}
+	if (id == 1) {
+		mutex_lock(&h->lock);
+		h->activate_mode = (h->flyme_rtp_override ||
+			(h->info.effect_id_boundary && h->effect_id >= h->info.effect_id_boundary)) ?
+			AW8697_HAPTIC_ACTIVATE_RTP_MODE : AW8697_HAPTIC_ACTIVATE_RAM_MODE;
+		mutex_unlock(&h->lock);
+	}
+	return aw8697_activate_store(d, a, b, n);
+}
+static ssize_t aw8697_flyme_effect(struct device *d, struct device_attribute *a, const char *b, size_t n) { return aw8697_effect_id_store(d, a, b, n); }
+static ssize_t aw8697_flyme_rtp(struct device *d, struct device_attribute *a, const char *b, size_t n)
+{
+	struct aw8697 *h = dev_get_drvdata(d);
+	char value[16];
+	unsigned int id;
+	if (kstrtouint(b, 0, &id))
+		return -EINVAL;
+	id %= (sizeof(aw8697_rtp_name) / AW8697_RTP_NAME_MAX);
+	snprintf(value, sizeof(value), "%u", id);
+	mutex_lock(&h->lock);
+	h->state = 1;
+	h->activate_mode = AW8697_HAPTIC_ACTIVATE_RTP_MODE;
+	h->rtp_file_num = id;
+	h->flyme_rtp_override = 1;
+	mutex_unlock(&h->lock);
+	return aw8697_rtp_store(d, a, value, strlen(value));
+}
+static ssize_t aw8697_flyme_gain(struct device *d, struct device_attribute *a, const char *b, size_t n) { return aw8697_gain_store(d, a, b, n); }
+static ssize_t aw8697_flyme_strength(struct device *d, struct device_attribute *a, const char *b, size_t n)
+{
+	unsigned int x;
+	if (sscanf(b, "%u", &x) < 1 || x > 2)
+		return -EINVAL;
+	return aw8697_gain_store(d, a, x == 0 ? "255" : (x == 1 ? "180" : "100"), 3);
+}
+static ssize_t aw8697_flyme_timeout(struct device *d, struct device_attribute *a, const char *b, size_t n)
+{
+	unsigned int v, amp = 128;
+	if (sscanf(b, "%u %u", &v, &amp) < 1)
+		return -EINVAL;
+	if (!v)
+		return aw8697_activate_store(d, a, "0", 1);
+	{
+		char duration[16], gain[16];
+		snprintf(duration, sizeof(duration), "%u", v);
+		aw8697_duration_store(d, a, duration, strlen(duration));
+		if (amp > 255)
+			amp = 255;
+		snprintf(gain, sizeof(gain), "%u", amp);
+		aw8697_flyme_gain(d, a, gain, strlen(gain));
+		{
+			struct aw8697 *h = dev_get_drvdata(d);
+			mutex_lock(&h->lock);
+			h->activate_mode = AW8697_HAPTIC_ACTIVATE_RAM_LOOP_MODE;
+			h->effect_id = 0;
+			h->flyme_rtp_override = 0;
+			mutex_unlock(&h->lock);
+		}
+	}
+	return aw8697_activate_store(d, a, "1", 1);
+}
+static struct device_attribute aw8697_flyme_onoff = __ATTR(on_off, 0220, NULL, aw8697_flyme_activate);
+static struct device_attribute aw8697_flyme_rtp_attr = __ATTR(rtp, 0220, NULL, aw8697_flyme_rtp);
+static struct device_attribute aw8697_flyme_waveform = __ATTR(waveform, 0220, NULL, aw8697_flyme_effect);
+static struct device_attribute aw8697_flyme_set_rtp = __ATTR(set_rtp, 0220, NULL, aw8697_flyme_rtp);
+static struct device_attribute aw8697_flyme_set_mback = __ATTR(set_mback, 0220, NULL, aw8697_flyme_strength);
+static struct device_attribute aw8697_flyme_set_cspress = __ATTR(set_cspress, 0220, NULL, aw8697_flyme_strength);
+static struct device_attribute aw8697_flyme_led_effect = __ATTR(effect_id, 0220, NULL, aw8697_flyme_effect);
+static struct device_attribute aw8697_flyme_led_activate = __ATTR(activate, 0220, NULL, aw8697_flyme_activate);
+static struct device_attribute aw8697_flyme_led_gain = __ATTR(gain, 0220, NULL, aw8697_flyme_gain);
+static struct device_attribute aw8697_flyme_enable = __ATTR(enable, 0220, NULL, aw8697_flyme_timeout);
+static struct attribute *aw8697_flyme_attrs[] = {
+	&aw8697_flyme_onoff.attr, &aw8697_flyme_rtp_attr.attr,
+	&aw8697_flyme_waveform.attr, &aw8697_flyme_set_rtp.attr,
+	&aw8697_flyme_set_mback.attr, &aw8697_flyme_set_cspress.attr, NULL
+};
+static const struct attribute_group aw8697_flyme_group = { .attrs = aw8697_flyme_attrs };
+static struct attribute *aw8697_flyme_timed_attrs[] = { &aw8697_flyme_enable.attr, NULL };
+static const struct attribute_group aw8697_flyme_timed_group = { .attrs = aw8697_flyme_timed_attrs };
+static const struct attribute_group *aw8697_flyme_groups[] = {
+	&aw8697_flyme_group, NULL
+};
+static const struct attribute_group *aw8697_flyme_timed_groups[] = {
+	&aw8697_flyme_timed_group, NULL
+};
+static struct attribute *aw8697_flyme_led_attrs[] = {
+	&aw8697_flyme_led_effect.attr, &aw8697_flyme_led_activate.attr,
+	&aw8697_flyme_led_gain.attr, NULL
+};
+static const struct attribute_group aw8697_flyme_led_group = { .attrs = aw8697_flyme_led_attrs };
+#endif
+
 /******************************************************
  *
  * i2c driver
@@ -6909,6 +7034,29 @@ static int aw8697_i2c_probe(struct i2c_client *i2c,
 
 	g_aw8697 = aw8697;
 
+#ifdef CONFIG_AW8697_FLYME_COMPAT
+	aw8697_flyme_class = class_create(THIS_MODULE, "meizu");
+	if (!IS_ERR(aw8697_flyme_class) && IS_ERR(device_create_with_groups(
+		aw8697_flyme_class, &i2c->dev, MKDEV(0, 0), aw8697,
+		aw8697_flyme_groups, "motor"))) {
+		class_destroy(aw8697_flyme_class);
+		aw8697_flyme_class = NULL;
+	}
+	aw8697_flyme_timed_class = class_create(THIS_MODULE, "timed_output");
+	if (!IS_ERR(aw8697_flyme_timed_class) && IS_ERR(device_create_with_groups(
+		aw8697_flyme_timed_class, &i2c->dev, MKDEV(0, 0), aw8697,
+		aw8697_flyme_timed_groups, "vibrator"))) {
+		class_destroy(aw8697_flyme_timed_class);
+		aw8697_flyme_timed_class = NULL;
+	}
+	aw8697_flyme_led.name = "vibrator";
+	aw8697_flyme_led.max_brightness = 255;
+	if (!led_classdev_register(&i2c->dev, &aw8697_flyme_led)) {
+		dev_set_drvdata(aw8697_flyme_led.dev, aw8697);
+		sysfs_create_group(&aw8697_flyme_led.dev->kobj, &aw8697_flyme_led_group);
+	}
+#endif
+
 	ret = create_rb();
 	if (ret < 0) {
 		dev_info(&i2c->dev, "%s error creating ringbuffer\n", __func__);
@@ -6948,6 +7096,23 @@ static int aw8697_i2c_remove(struct i2c_client *i2c)
 {
 	struct aw8697 *aw8697 = i2c_get_clientdata(i2c);
 
+#ifdef CONFIG_AW8697_FLYME_COMPAT
+	if (aw8697_flyme_class) {
+		device_destroy(aw8697_flyme_class, MKDEV(0, 0));
+		class_destroy(aw8697_flyme_class);
+		aw8697_flyme_class = NULL;
+	}
+	if (aw8697_flyme_timed_class) {
+		device_destroy(aw8697_flyme_timed_class, MKDEV(0, 0));
+		class_destroy(aw8697_flyme_timed_class);
+		aw8697_flyme_timed_class = NULL;
+	}
+	if (aw8697_flyme_led.dev) {
+		sysfs_remove_group(&aw8697_flyme_led.dev->kobj, &aw8697_flyme_led_group);
+		led_classdev_unregister(&aw8697_flyme_led);
+		aw8697_flyme_led.dev = NULL;
+	}
+#endif
 	aw_pr_info("%s enter\n", __func__);
 	if (aw8697->chip_version == AW8697_CHIP_9X) {
 		sysfs_remove_group(&i2c->dev.kobj,

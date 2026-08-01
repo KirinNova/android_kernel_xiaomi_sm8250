@@ -502,6 +502,8 @@ struct aw8697 {
 	int effect_id;
 	int test_val;
 	int is_custom_wave;
+	/* Flyme RTP requests must not be treated as custom ringbuffer waves. */
+	int flyme_rtp_override;
 #endif
 };
 

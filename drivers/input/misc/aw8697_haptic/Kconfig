@@ -21,3 +21,10 @@ config INPUT_AW8697_HAPTIC_DAGU
 	  dagu.
 
 	  If unsure, say N.
+
+config AW8697_FLYME_COMPAT
+	bool "AW8697 Flyme sysfs compatibility"
+	depends on INPUT_AW8697_HAPTIC
+	default n
+	help
+	  Export the Meizu sysfs nodes required by FlymeVibratorHelper.
