@@ -6741,16 +6741,17 @@ static ssize_t aw8697_flyme_timeout(struct device *d, struct device_attribute *a
 	}
 	return aw8697_activate_store(d, a, "1", 1);
 }
-static struct device_attribute aw8697_flyme_onoff = __ATTR(on_off, 0220, NULL, aw8697_flyme_activate);
-static struct device_attribute aw8697_flyme_rtp_attr = __ATTR(rtp, 0220, NULL, aw8697_flyme_rtp);
-static struct device_attribute aw8697_flyme_waveform = __ATTR(waveform, 0220, NULL, aw8697_flyme_effect);
-static struct device_attribute aw8697_flyme_set_rtp = __ATTR(set_rtp, 0220, NULL, aw8697_flyme_rtp);
-static struct device_attribute aw8697_flyme_set_mback = __ATTR(set_mback, 0220, NULL, aw8697_flyme_strength);
-static struct device_attribute aw8697_flyme_set_cspress = __ATTR(set_cspress, 0220, NULL, aw8697_flyme_strength);
-static struct device_attribute aw8697_flyme_led_effect = __ATTR(effect_id, 0220, NULL, aw8697_flyme_effect);
-static struct device_attribute aw8697_flyme_led_activate = __ATTR(activate, 0220, NULL, aw8697_flyme_activate);
-static struct device_attribute aw8697_flyme_led_gain = __ATTR(gain, 0220, NULL, aw8697_flyme_gain);
-static struct device_attribute aw8697_flyme_enable = __ATTR(enable, 0220, NULL, aw8697_flyme_timeout);
+/* FlymeVibratorHelper runs as the Android system UID, not root. */
+static struct device_attribute aw8697_flyme_onoff = __ATTR(on_off, 0666, NULL, aw8697_flyme_activate);
+static struct device_attribute aw8697_flyme_rtp_attr = __ATTR(rtp, 0666, NULL, aw8697_flyme_rtp);
+static struct device_attribute aw8697_flyme_waveform = __ATTR(waveform, 0666, NULL, aw8697_flyme_effect);
+static struct device_attribute aw8697_flyme_set_rtp = __ATTR(set_rtp, 0666, NULL, aw8697_flyme_rtp);
+static struct device_attribute aw8697_flyme_set_mback = __ATTR(set_mback, 0666, NULL, aw8697_flyme_strength);
+static struct device_attribute aw8697_flyme_set_cspress = __ATTR(set_cspress, 0666, NULL, aw8697_flyme_strength);
+static struct device_attribute aw8697_flyme_led_effect = __ATTR(effect_id, 0666, NULL, aw8697_flyme_effect);
+static struct device_attribute aw8697_flyme_led_activate = __ATTR(activate, 0666, NULL, aw8697_flyme_activate);
+static struct device_attribute aw8697_flyme_led_gain = __ATTR(gain, 0666, NULL, aw8697_flyme_gain);
+static struct device_attribute aw8697_flyme_enable = __ATTR(enable, 0666, NULL, aw8697_flyme_timeout);
 static struct attribute *aw8697_flyme_attrs[] = {
 	&aw8697_flyme_onoff.attr, &aw8697_flyme_rtp_attr.attr,
 	&aw8697_flyme_waveform.attr, &aw8697_flyme_set_rtp.attr,
