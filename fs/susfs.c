@@ -251,7 +251,6 @@ void susfs_set_hide_sus_mnts_for_non_su_procs(void __user **user_info) {
 		goto out_copy_to_user;
 	}
 	
-
 	if (info.enabled) {
 		static_branch_enable(&susfs_is_hide_sus_mnts_for_non_su_procs_enabled);
 	} else {
@@ -638,9 +637,9 @@ void susfs_set_uname(void __user **user_info) {
 		strscpy(my_uname.release, info.release, __NEW_UTS_LEN);
 	}
 	if (!strcmp(info.version, "default")) {
-		strscpy(my_uname.version, info.version, __NEW_UTS_LEN);
+		strscpy(my_uname.version, utsname()->version, __NEW_UTS_LEN);
 	} else {
-		strncpy(my_uname.version, info.version, __NEW_UTS_LEN);
+		strscpy(my_uname.version, info.version, __NEW_UTS_LEN);
 	}
 	write_sequnlock(&susfs_uname_seqlock);
 
@@ -1475,9 +1474,9 @@ struct work_struct susfs_extra_works;
 static void susfs_run_extra_works(struct work_struct *work) {
 	if (!ksu_cred)
 		return;
-	#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 	susfs_run_sus_path_loop();
-	#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 }
 
 /* susfs_init */
