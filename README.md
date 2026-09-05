@@ -32,7 +32,7 @@ The kernel source code is still under development and may cause some unpredictab
 
 **English:**
 
-This repository is based on [KirinNova's fork (`AstideLabs/android_kernel_xiaomi_sm8250`)](https://www.google.com/search?q=https://github.com/AstideLabs/android_kernel_xiaomi_sm8250), featuring further deep optimizations and adjustments built upon the upstream source.
+This repository is based on [KirinNova's fork (`AstideLabs/android_kernel_xiaomi_sm8250`)](https://github.com/AstideLabs/android_kernel_xiaomi_sm8250), featuring further deep optimizations and adjustments built upon the upstream source.
 
 ---
 
