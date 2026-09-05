@@ -28,7 +28,7 @@ The kernel source code is still under development and may cause some unpredictab
 
 **中文:**
 
-该 repo 是 [KirinNova  Fork的 (`AstideLabs/android_kernel_xiaomi_sm8250`)](https://www.google.com/search?q=https://github.com/AstideLabs/android_kernel_xiaomi_sm8250)仓库，基于上游源码进行了进一步的深度优化与调整。
+该 repo 是 [KirinNova  Fork的 (`AstideLabs/android_kernel_xiaomi_sm8250`)](https://github.com/AstideLabs/android_kernel_xiaomi_sm8250)仓库，基于上游源码进行了进一步的深度优化与调整。
 
 **English:**
 
