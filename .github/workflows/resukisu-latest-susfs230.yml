@@ -33,7 +33,7 @@ on:
           - both
   push:
     branches:
-      - sync-resukisu42-susfs230
+      - 'android*'
     paths:
       - '.github/workflows/resukisu-latest-susfs230.yml'
       - '.github/scripts/adapt-susfs230.sh'
