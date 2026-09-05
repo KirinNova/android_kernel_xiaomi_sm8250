@@ -50,7 +50,7 @@ jobs:
     - name: Checkout successful SUSFS 2.3 kernel baseline
       uses: actions/checkout@v4
       with:
-        ref: sync-resukisu42-susfs230
+        ref: android17-aptusitu
         fetch-depth: 1
 
     - name: Set up Environment
