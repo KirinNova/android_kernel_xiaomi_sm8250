@@ -213,7 +213,7 @@ configure_droidspaces_non_gki() {
         -e NF_CONNTRACK_IPV4 \
         -e NF_NAT_IPV4 \
         -e IP_NF_NAT \
-        -d USER_NS \
+        -e USER_NS \
         -d ANDROID_PARANOID_NETWORK
 
     # Resolve dependencies now
