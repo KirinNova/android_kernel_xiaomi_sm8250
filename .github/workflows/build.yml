@@ -90,6 +90,13 @@ jobs:
         echo 'echo ""' >> scripts/setlocalversion
         chmod +x scripts/setlocalversion
 
+    - name: Fix SukiSU-Ultra Kernel Umount Compile Error
+      run: |
+        if [ -f drivers/kernelsu/feature/kernel_umount.c ]; then
+          sed -i 's/\.set_handler = kernel_umount_feature_set,/.set_handler = NULL,/g' drivers/kernelsu/feature/kernel_umount.c
+          echo "Successfully patched kernel_umount.c"
+        fi
+
     - name: Run Build Script
       run: |
         chmod +x build_kernel.sh
