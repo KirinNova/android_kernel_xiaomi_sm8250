@@ -1241,7 +1241,13 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
 
     curl -LSs "$KSU_SETUP_URL" | bash -s builtin
 
-    echo "[+] KernelSU setup finished."
+    echo "[+] KernelSU setup finishe
+    
+    if [ -f drivers/kernelsu/feature/kernel_umount.c ]; then
+        echo "[*] Applying patch for kernel_umount.c compile error..."
+        sed -i 's/\.set_handler = kernel_umount_feature_set,/.set_handler = NULL,/g' drivers/kernelsu/feature/kernel_umount.c
+        echo "[+] Patch applied successfully."
+    fi
 
     KSU_REPO="$(find_ksu_repo || true)"
     if [ -n "$KSU_REPO" ]; then
