@@ -107,16 +107,17 @@ jobs:
         env:
           INPUT_DEVICE: ${{ github.event.inputs.device }}
           INPUT_TARGET_OS: ${{ github.event.inputs.target_os }}
+          SUKISU_SHA: ${{ env.SUKISU_SHA }} 
         run: |
           chmod +x build_kernel.sh
           DEVICE="${INPUT_DEVICE:-alioth}"
           TARGET_OS="${INPUT_TARGET_OS:-miui}"
           echo "Executing command: ./build_kernel.sh $DEVICE ksu $TARGET_OS"
-          echo "ReSukiSU SHA: ${RESUKISU_SHA:-unknown}"
+          echo "ReSukiSU SHA: ${SUKISU_SHA:-unknown}"
           echo "KCFLAGS=$KCFLAGS"
           ./build_kernel.sh "$DEVICE" ksu "$TARGET_OS"
           grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
-          echo "resukisu_sha=${RESUKISU_SHA:-unknown}" >> adapt-susfs230-proof.txt
+          echo "resukisu_sha=${SUKISU_SHA:-unknown}" >> adapt-susfs230-proof.txt 
           echo 'resukisu_ref=main-latest' >> adapt-susfs230-proof.txt
 
       - name: Upload artifacts
