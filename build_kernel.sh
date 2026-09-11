@@ -1232,6 +1232,7 @@ integrate_selinux_hide_nongki() {
     echo "==========================================="
 }
 
+
 if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "==========================================="
     echo " [*] Initializing KernelSU Setup"
@@ -1241,7 +1242,7 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
 
     curl -LSs "$KSU_SETUP_URL" | bash -s builtin
 
-    echo "[+] KernelSU setup finishe
+    echo "[+] KernelSU setup finished."
     
     if [ -f drivers/kernelsu/feature/kernel_umount.c ]; then
         echo "[*] Applying patch for kernel_umount.c compile error..."
