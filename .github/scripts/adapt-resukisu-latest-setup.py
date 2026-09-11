@@ -7,16 +7,17 @@ sha = sys.argv[1]
 build = Path("build_kernel.sh")
 text = build.read_text()
 
-old = 'curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash'
+old = 'curl -LSs "$KSU_SETUP_URL" | bash -s builtin'
 new = (
     f'curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/{sha}/kernel/setup.sh" '
-    f"| bash -s -- {sha}"
+    f'| bash -s -- {sha}'
 )
+
 if old in text:
     text = text.replace(old, new, 1)
 elif sha not in text:
     text2, n = re.subn(
-        r'curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/[^/]+/kernel/setup.sh" \| bash(?: -s -- \S+)?',
+        r'curl -LSs "[^"]+" \| bash(?: -s -- \S+)?',
         new,
         text,
         count=1,
