@@ -9,8 +9,8 @@ text = build.read_text()
 
 old = 'curl -LSs "$KSU_SETUP_URL" | bash -s builtin'
 new = (
-    f'curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/{sha}/kernel/setup.sh" '
-    f'| bash -s -- {sha}'
+    'curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" '
+    f'| bash -s builtin {sha}'
 )
 
 if old in text:
@@ -45,4 +45,4 @@ if kpm_line not in text:
     text = text.replace(needle, needle + kpm_line, 1)
 
 build.write_text(text)
-print("pinned SukiSU setup to", sha)
+print("Successfully configured SukiSU builtin setup with SHA:", sha)
