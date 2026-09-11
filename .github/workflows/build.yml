@@ -31,7 +31,7 @@ on:
 
 jobs:
   build-kernel:
-    name: ReSukiSU latest + SUSFS 2.3.0 (${{ github.event.inputs.device || 'alioth' }})
+    name: SukiSU latest + SUSFS 2.3.0 (${{ github.event.inputs.device || 'alioth' }})
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
