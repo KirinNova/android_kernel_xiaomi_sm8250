@@ -1658,7 +1658,7 @@ static struct dentry *__lookup_hash(const struct qstr *name,
 
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 	if (dentry) {
-		return dentry;	
+		return dentry;
 	}
 #else
 	if (dentry)
