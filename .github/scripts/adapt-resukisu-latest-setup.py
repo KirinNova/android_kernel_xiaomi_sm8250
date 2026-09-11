@@ -7,22 +7,22 @@ sha = sys.argv[1]
 build = Path("build_kernel.sh")
 text = build.read_text()
 
-old = 'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash'
+old = 'curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash'
 new = (
-    f'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/{sha}/kernel/setup.sh" '
+    f'curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/{sha}/kernel/setup.sh" '
     f"| bash -s -- {sha}"
 )
 if old in text:
     text = text.replace(old, new, 1)
 elif sha not in text:
     text2, n = re.subn(
-        r'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/[^/]+/kernel/setup.sh" \| bash(?: -s -- \S+)?',
+        r'curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/[^/]+/kernel/setup.sh" \| bash(?: -s -- \S+)?',
         new,
         text,
         count=1,
     )
     if n != 1:
-        raise SystemExit("ReSukiSU setup command layout changed; refusing blind patch")
+        raise SystemExit("SukiSU setup command layout changed; refusing blind patch")
     text = text2
 
 marker = 'echo "[+] KernelSU setup finished."'
@@ -44,4 +44,4 @@ if kpm_line not in text:
     text = text.replace(needle, needle + kpm_line, 1)
 
 build.write_text(text)
-print("pinned ReSukiSU setup to", sha)
+print("pinned SukiSU setup to", sha)
