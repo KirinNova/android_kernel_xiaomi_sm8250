@@ -399,8 +399,71 @@ build_target() {
 
     # 3. Droidspaces Non-GKI configurations
     configure_droidspaces_non_gki "${OUT_DIR}"
+    # 4.bbr
+    echo "[*] Injecting user-specified custom options (BBG, REKERNEL, NETFILTER, BBR, etc.)..."
+    scripts/config --file "${OUT_DIR}/.config" \
+        -e BBG \
+        -e REKERNEL \
+        -e REKERNEL_NETWORK \
+        -e NETFILTER \
+        -e NETFILTER_ADVANCED \
+        -e NETFILTER_XTABLES \
+        -e NF_CONNTRACK \
+        -e NF_CONNTRACK_IPV4 \
+        -e NF_NAT \
+        -e NF_NAT_IPV4 \
+        -e IP_NF_IPTABLES \
+        -e IP_NF_FILTER \
+        -e IP_NF_MANGLE \
+        -e IP_NF_NAT \
+        -e IP_NF_TARGET_MASQUERADE \
+        -e IP_NF_TARGET_REDIRECT \
+        -e NETFILTER_XT_MATCH_ADDRTYPE \
+        -e NETFILTER_XT_MATCH_CONNTRACK \
+        -e NETFILTER_XT_MATCH_MULTIPORT \
+        -e NETFILTER_XT_MATCH_STATE \
+        -e NETFILTER_XT_TARGET_MASQUERADE \
+        -e NETFILTER_XT_TARGET_TPROXY \
+        -e NETFILTER_XT_TARGET_MARK \
+        -e NETFILTER_XT_MATCH_MARK \
+        -e IP_SET \
+        -e NETFILTER_XT_SET \
+        -e IP_ADVANCED_ROUTER \
+        -e IP_MULTIPLE_TABLES \
+        -e NF_TABLES \
+        -e NFT_NAT \
+        -e NFT_MASQ \
+        -e NFT_REDIR \
+        -e NFT_CT \
+        -e NET_NS \
+        -e VETH \
+        -e BRIDGE \
+        -e BRIDGE_NETFILTER \
+        -e TUN \
+        -e PPP \
+        -e PPP_MPPE \
+        -e CIFS \
+        -e NET_SCH_FQ \
+        -e NET_SCH_FQ_CODEL \
+        -e WIREGUARD \
+        -e TCP_CONG_ADVANCED \
+        -e TCP_CONG_BBR \
+        -e TCP_CONG_CUBIC \
+        -e TCP_CONG_WESTWOOD \
+        -e TCP_CONG_BIC \
+        -e TCP_CONG_HTCP \
+        -e DEFAULT_BBR \
+        -e IOSCHED_DEADLINE \
+        -e IOSCHED_CFQ \
+        -e MQ_IOSCHED_DEADLINE \
+        -e MQ_IOSCHED_KYBER \
+        -e IOSCHED_BFQ \
+        -e BFQ_GROUP_IOSCHED \
+        -e DEFAULT_DEADLINE
 
-    # 4. MIUI configurations
+    scripts/config --file "${OUT_DIR}/.config" --set-str DEFAULT_NET_TCP_ALG "bbr" 2>/dev/null || true
+
+    # 5. MIUI configurations
     if [ "$OS_TYPE" == "miui" ]; then
         echo "[*] Injecting MIUI specific configurations..."
         scripts/config --file "${OUT_DIR}/.config" \
@@ -433,12 +496,10 @@ build_target() {
             -e MILLET_BINDER_GKI \
             -e MILLET_CORE \
             -e MILLET_HS \
-            -e BINDER_PRIO \
-            -d REKERNEL \
-            -d REKERNEL_NETWORK
+            -e BINDER_PRIO
     fi
 
-    # 5. AOSP configurations
+    # 6. AOSP configurations
     if [ "$OS_TYPE" == "aosp" ]; then
         echo "[*] Injecting AOSP specific configurations..."
         scripts/config --file "${OUT_DIR}/.config" \
