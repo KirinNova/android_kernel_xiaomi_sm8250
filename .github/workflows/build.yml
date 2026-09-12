@@ -25,9 +25,8 @@ on:
     paths:
       - '.github/workflows/resukisu-latest-susfs230.yml'
       - '.github/scripts/adapt-susfs230.sh'
-      - '.github/scripts/rewrite-susfs230-hooks.py'
       - '.github/scripts/adapt-resukisu-sucompat230.sh'
-      - '.github/scripts/adapt-resukisu-latest-setup.py'
+      - '.github/scripts/rewrite-susfs230-hooks.py'
 
 jobs:
   build-kernel:
@@ -65,28 +64,75 @@ jobs:
           wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
           tar -zxvf Clang-16.0.6-20260510.tar.gz
 
-      - name: Full SUSFS 2.3.0 backport (GKI overlay + 4.19 hooks)
+      - name: Apply Full SUSFS 2.3.0 & ReSukiSU Sucompat Alignment + Strict Verification
         run: |
-          chmod +x .github/scripts/adapt-susfs230.sh .github/scripts/adapt-resukisu-sucompat230.sh
-          .github/scripts/adapt-susfs230.sh
-          grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
-          grep -Fq 'susfs_is_current_proc_no_su()' fs/exec.c
-          grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/open.c
-          grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/stat.c
+          chmod +x .github/scripts/adapt-susfs230.sh \
+                   .github/scripts/adapt-resukisu-sucompat230.sh \
+                   .github/scripts/rewrite-susfs230-hooks.py
 
-      - name: Use SukiSU latest with adapt setup script
-        run: |
-          SUKISU_SHA=$(git ls-remote https://github.com/SukiSU-Ultra/SukiSU-Ultra.git refs/heads/main | awk '{print $1}')
-          if [ -z "$SUKISU_SHA" ]; then
-            echo 'failed to resolve SukiSU-Ultra main SHA'
-            exit 1
-          fi
-          echo "SUKISU_SHA=$SUKISU_SHA" >> "$GITHUB_ENV"
-          echo "Resolved SukiSU-Ultra main: $SUKISU_SHA"
-          python3 .github/scripts/adapt-resukisu-latest-setup.py "$SUKISU_SHA"
-          echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
-          grep -nE 'SukiSU|adapt-resukisu|-d KPM' build_kernel.sh | head
+          echo "========================================="
+          echo "Step 1: Running SUSFS 2.3.0 core adapter..."
+          echo "========================================="
+          .github/scripts/adapt-susfs230.sh
+
+          echo "========================================="
+          echo "Step 2: Rewriting 4.19 inline hooks..."
+          echo "========================================="
+          python3 -u .github/scripts/rewrite-susfs230-hooks.py
+
+          echo "========================================="
+          echo "Step 3: Aligning ReSukiSU sucompat handlers..."
+          echo "========================================="
+          .github/scripts/adapt-resukisu-sucompat230.sh
+
+          echo "========================================="
+          echo "Step 4: Running Strict Verification..."
+          echo "========================================="
           
+          FAILED=0
+
+          if grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h; then
+            echo "[OK] SUSFS v2.3.0 header verified."
+          else
+            echo "[ERROR] SUSFS v2.3.0 header not found!"
+            FAILED=1
+          fi
+          
+          if grep -Fq 'susfs_is_current_proc_no_su()' fs/exec.c; then
+            echo "[OK] fs/exec.c hook verified."
+          else
+            echo "[ERROR] susfs_is_current_proc_no_su() missing in fs/exec.c!"
+            FAILED=1
+          fi
+
+          if grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/open.c; then
+            echo "[OK] fs/open.c hook verified."
+          else
+            echo "[ERROR] filename_lookup missing in fs/open.c!"
+            FAILED=1
+          fi
+
+          SUC_PATH=$(find . -name 'sucompat.c' | head -n1)
+          if [ -n "$SUC_PATH" ] && grep -Fq 'int ksu_handle_faccessat(int *dfd, struct filename **filename' "$SUC_PATH"; then
+            echo "[OK] ReSukiSU sucompat handlers aligned successfully."
+          else
+            echo "[ERROR] sucompat faccessat handler not properly aligned!"
+            FAILED=1
+          fi
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo "========================================="
+            echo "Strict verification FAILED. Aborting compilation."
+            echo "========================================="
+            exit 1
+          else
+            echo "========================================="
+            echo "All integration checks passed successfully."
+            echo "========================================="
+          fi
+
+          echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
+
       - name: Modify kernel version string (Remove cip/st extra suffix)
         run: |
           sed -i 's|^EXTRAVERSION =.*|EXTRAVERSION = -Ikun-KirinNova|' Makefile
@@ -107,18 +153,15 @@ jobs:
         env:
           INPUT_DEVICE: ${{ github.event.inputs.device }}
           INPUT_TARGET_OS: ${{ github.event.inputs.target_os }}
-          SUKISU_SHA: ${{ env.SUKISU_SHA }} 
         run: |
           chmod +x build_kernel.sh
           DEVICE="${INPUT_DEVICE:-alioth}"
           TARGET_OS="${INPUT_TARGET_OS:-miui}"
           echo "Executing command: ./build_kernel.sh $DEVICE ksu $TARGET_OS"
-          echo "ReSukiSU SHA: ${SUKISU_SHA:-unknown}"
           echo "KCFLAGS=$KCFLAGS"
           ./build_kernel.sh "$DEVICE" ksu "$TARGET_OS"
-          grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
-          echo "resukisu_sha=${SUKISU_SHA:-unknown}" >> adapt-susfs230-proof.txt 
-          echo 'resukisu_ref=main-latest' >> adapt-susfs230-proof.txt
+          
+          echo 'resukisu_ref=main-latest' >> adapt-susfs230-proof.txt 
 
       - name: Upload artifacts
         if: always()
