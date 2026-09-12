@@ -267,9 +267,9 @@ import sys
 import re
 
 repo = Path(sys.argv[1])
-allowlist = repo / "kernel/policy/allowlist.c"
-ksud = repo / "kernel/runtime/ksud.c"
-dispatch = repo / "kernel/supercall/dispatch.c"
+allowlist = repo / "drivers/kernelsu/policy/allowlist.c"
+ksud = repo / "drivers/kernelsu/runtime/ksud.c"
+dispatch = repo / "drivers/kernelsu/supercall/dispatch.c"
 
 def patch_allowlist(p: Path):
     if not p.exists():
@@ -356,7 +356,7 @@ def patch_dispatch(p: Path):
     int ret = 0;
 
     if (copy_from_user(&uid, (char __user *)arg + offsetof(struct ksu_get_app_profile_cmd, profile.curr_uid),
-                         sizeof(uid_t))) {
+                       sizeof(uid_t))) {
         pr_err("get_app_profile: copy_from_user failed\\n");
         return -EFAULT;
     }
@@ -507,7 +507,7 @@ static int do_get_app_profile(void __user *arg)
     print("[+] dispatch: accept manager app-profile ABI v2/v3 (776 bytes)")
 
 if not allowlist.exists() or not dispatch.exists():
-    print("WARNING: SukiSU source layout unexpected; skip manager compat")
+    print(f"WARNING: SukiSU source layout unexpected; skip manager compat (Checked paths: {allowlist.parent})")
 else:
     patch_allowlist(allowlist)
     patch_ksud(ksud)
