@@ -252,6 +252,7 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
     curl -LSs https://raw.githubusercontent.com/xiziya/SukiSU_Non-GKI/builtin/kernel/setup.sh | sh
     echo "[+] KernelSU setup finished."
 fi
+
 # ==========================================
 # SukiSU Manager v3/v4 Compat Patch Integration
 # ==========================================
@@ -515,6 +516,7 @@ else:
     print("[+] SukiSU manager v3/v4 compat logic applied")
 
 PY
+fi
 
 # ==========================================
 # Baseband-guard Setup
@@ -566,7 +568,6 @@ build_target() {
     
     local OUT_DIR="${KERNEL_DIR}/out_${OS_TYPE}"
     
-    # Make options need to be available globally for functions like olddefconfig inside scripts/config calls
     MAKE_OPTS=(
         -j"$(nproc)"
         O="${OUT_DIR}"
@@ -591,7 +592,6 @@ build_target() {
         echo "[*] Applying MIUI DTS patches..."
         cp -a "${DTS_SOURCE}" "${DTS_BACKUP}"
         
-        # Apply MIUI specific sed patches to dts
         sed -i 's/<154>/<1537>/g' ${DTS_SOURCE}/dsi-panel-j1s* || true
         sed -i 's/<154>/<1537>/g' ${DTS_SOURCE}/dsi-panel-j2* || true
         sed -i 's/<155>/<1544>/g' ${DTS_SOURCE}/dsi-panel-j3s-37-02-0a-dsc-video.dtsi || true
@@ -643,15 +643,10 @@ build_target() {
     echo "[*] Making defconfig: ${DEFCONFIG}..."
     make "${MAKE_OPTS[@]}" "${DEFCONFIG}"
 
-    # ----------------------------------------------------
     # Configuration tweaks
-    # ----------------------------------------------------
-    
-    # 1. Baseband-guard configuration (Always applied)
     echo "[*] Injecting Baseband-guard configuration..."
     scripts/config --file "${OUT_DIR}/.config" -e BBG
 
-    # 2. KernelSU configurations
     if [ "$ENABLE_KSU" -eq 1 ]; then
         echo "[*] Injecting KernelSU & SUSFS configurations..."
         scripts/config --file "${OUT_DIR}/.config" \
@@ -660,10 +655,9 @@ build_target() {
             -e KSU_SUSFS
     fi
 
-    # 3. Droidspaces Non-GKI configurations
     configure_droidspaces_non_gki "${OUT_DIR}"
-    # 4.bbr
-    echo "[*] Injecting user-specified custom options (BBG, REKERNEL, NETFILTER, BBR, etc.)..."
+
+    echo "[*] Injecting user-specified custom options..."
     scripts/config --file "${OUT_DIR}/.config" \
         -e BBG \
         -e REKERNEL \
@@ -726,7 +720,6 @@ build_target() {
 
     scripts/config --file "${OUT_DIR}/.config" --set-str DEFAULT_NET_TCP_ALG "bbr" 2>/dev/null || true
 
-    # 5. MIUI configurations
     if [ "$OS_TYPE" == "miui" ]; then
         echo "[*] Injecting MIUI specific configurations..."
         scripts/config --file "${OUT_DIR}/.config" \
@@ -762,7 +755,6 @@ build_target() {
             -e BINDER_PRIO
     fi
 
-    # 6. AOSP configurations
     if [ "$OS_TYPE" == "aosp" ]; then
         echo "[*] Injecting AOSP specific configurations..."
         scripts/config --file "${OUT_DIR}/.config" \
@@ -770,17 +762,12 @@ build_target() {
             -e REKERNEL_NETWORK
     fi
 
-    # We always need to re-evaluate dependencies because BBG and Droidspaces are injected
     echo "[*] Updating config (make olddefconfig)..."
     make "${MAKE_OPTS[@]}" olddefconfig
 
-    # ----------------------------------------------------
-    # Compilation
-    # ----------------------------------------------------
     echo "[*] Building kernel..."
     make "${MAKE_OPTS[@]}" 
 
-    # Restore DTS backup for MIUI
     if [ "$OS_TYPE" == "miui" ]; then
         echo "[*] Restoring DTS backups..."
         rm -rf "${DTS_SOURCE}"
