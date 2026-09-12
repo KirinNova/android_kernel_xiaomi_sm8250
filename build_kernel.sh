@@ -264,7 +264,6 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
     python3 - "${KERNEL_DIR}" <<'PY'
 from pathlib import Path
 import sys
-import re
 
 repo = Path(sys.argv[1])
 allowlist = repo / "drivers/kernelsu/policy/allowlist.c"
@@ -279,27 +278,25 @@ def patch_allowlist(p: Path):
     if "migrated incoming app profile" in t:
         print("[+] allowlist: incoming v2/v3 migrate already present")
         return
-    if "static void migrate_profile(" not in t:
+
+    if "migrate_profile" not in t:
         print("WARNING: allowlist has no migrate_profile(); skip incoming migrate")
         return
+    
     if "static void migrate_profile(u32 version, struct app_profile *profile);" not in t:
         t = t.replace(
-            "static void release_perm_data(struct kref *ref)",
-            "static void migrate_profile(u32 version, struct app_profile *profile);\n\nstatic void release_perm_data(struct kref *ref)",
+            "static void release_perm_data",
+            "static void migrate_profile(u32 version, struct app_profile *profile);\n\nstatic void release_perm_data",
             1,
         )
-    needle = """int ksu_set_app_profile(struct app_profile *profile)
-{
-    struct perm_data *p, *np;
-    int result = 0;
 
-    if (!profile_valid(profile)) {"""
+    target = "int ksu_set_app_profile(struct app_profile *profile)"
+    if target not in t:
+        print("WARNING: allowlist ksu_set_app_profile not found")
+        return
     
-    insert = """int ksu_set_app_profile(struct app_profile *profile)
+    injection = """int ksu_set_app_profile(struct app_profile *profile)
 {
-    struct perm_data *p, *np;
-    int result = 0;
-
 #if KSU_APP_PROFILE_VER == 4
     if (profile && (profile->version == 2 || profile->version == 3)) {
         u32 old_version = profile->version;
@@ -308,14 +305,10 @@ def patch_allowlist(p: Path):
                 old_version, KSU_APP_PROFILE_VER, profile->key, profile->curr_uid);
     }
 #endif
-
-    if (!profile_valid(profile)) {"""
-    
-    if needle not in t:
-        print("WARNING: allowlist ksu_set_app_profile shape changed; skip")
-        return
-    p.write_text(t.replace(needle, insert, 1))
-    print("[+] allowlist: migrate incoming manager v2/v3 profiles")
+"""
+    t = t.replace(target, injection, 1)
+    p.write_text(t)
+    print("[+] allowlist: migrate incoming manager v2/v3 profiles applied")
 
 def patch_ksud(p: Path):
     if not p.exists():
@@ -325,20 +318,20 @@ def patch_ksud(p: Path):
     if "packages.list may already exist" in t:
         print("[+] ksud: throne fallback already present")
         return
-    old = """    ksu_load_allow_list();
-    ksu_observer_init();
-"""
-    new = """    ksu_load_allow_list();
-    ksu_observer_init();
+    
+    target = "ksu_observer_init();"
+    if target not in t:
+        print("WARNING: ksud ksu_observer_init not found")
+        return
+    
+    fallback_code = """ksu_observer_init();
     /* packages.list may already exist before the observer is installed. */
     if (unlikely(!ksu_is_manager_appid_valid()))
-        track_throne(false);
-"""
-    if old not in t:
-        print("WARNING: ksud on_post_fs_data shape changed; skip throne fallback")
-        return
-    p.write_text(t.replace(old, new, 1))
-    print("[+] ksud: track_throne(false) when manager appid is not ready")
+        track_throne(false);"""
+    
+    t = t.replace(target, fallback_code, 1)
+    p.write_text(t)
+    print("[+] ksud: track_throne(false) applied")
 
 def patch_dispatch(p: Path):
     if not p.exists():
@@ -348,36 +341,9 @@ def patch_dispatch(p: Path):
     if "KSU_APP_PROFILE_SIZE_V2_V3" in t:
         print("[+] dispatch: v2/v3 app-profile size already present")
         return
-    
-    old_get = """static int do_get_app_profile(void __user *arg)
-{
-    uid_t uid;
-    struct app_profile *profile;
-    int ret = 0;
 
-    if (copy_from_user(&uid, (char __user *)arg + offsetof(struct ksu_get_app_profile_cmd, profile.curr_uid),
-                       sizeof(uid_t))) {
-        pr_err("get_app_profile: copy_from_user failed\\n");
-        return -EFAULT;
-    }
-
-    rcu_read_lock();
-    profile = ksu_get_app_profile(uid);
-    rcu_read_unlock();
-    if (!profile) {
-        ret = -ENOENT;
-    } else {
-        if (copy_to_user((char __user *)arg + offsetof(struct ksu_get_app_profile_cmd, profile), profile,
-                         sizeof(struct app_profile))) {
-            pr_err("get_app_profile: copy_to_user failed\\n");
-            ret = -EFAULT;
-        }
-        ksu_put_app_profile(profile);
-    }
-    return ret;
-}"""
-
-    new_get = """#define KSU_APP_PROFILE_SIZE_V2_V3 776U
+    helpers = """
+#define KSU_APP_PROFILE_SIZE_V2_V3 776U
 
 static size_t app_profile_userspace_size(u32 version)
 {
@@ -389,122 +355,16 @@ static size_t app_profile_userspace_size(u32 version)
 
     return 0;
 }
-
-static int do_get_app_profile(void __user *arg)
-{
-    uid_t uid;
-    u32 requested_version;
-    size_t profile_size;
-    struct app_profile *profile;
-    struct app_profile compat_profile;
-    const struct app_profile *out_profile;
-    int ret = 0;
-
-    if (copy_from_user(&requested_version,
-               (char __user *)arg +
-               offsetof(struct ksu_get_app_profile_cmd,
-                    profile.version),
-               sizeof(requested_version))) {
-        pr_err("get_app_profile: copy profile version from user failed\\n");
-        return -EFAULT;
-    }
-
-    if (copy_from_user(&uid, (char __user *)arg + offsetof(struct ksu_get_app_profile_cmd, profile.curr_uid),
-               sizeof(uid_t))) {
-        pr_err("get_app_profile: copy_from_user failed\\n");
-        return -EFAULT;
-    }
-
-    profile_size = app_profile_userspace_size(requested_version);
-    if (!profile_size) {
-        pr_err("get_app_profile: unsupported profile version: %u\\n",
-            requested_version);
-        return -EINVAL;
-    }
-
-    rcu_read_lock();
-    profile = ksu_get_app_profile(uid);
-    rcu_read_unlock();
-    if (!profile) {
-        ret = -ENOENT;
-    } else {
-        out_profile = profile;
-        if (profile_size < sizeof(struct app_profile)) {
-            memcpy(&compat_profile, profile, sizeof(compat_profile));
-            compat_profile.version = requested_version;
-            out_profile = &compat_profile;
-        }
-
-        if (copy_to_user((char __user *)arg +
-                 offsetof(struct ksu_get_app_profile_cmd, profile),
-                 out_profile, profile_size)) {
-            pr_err("get_app_profile: copy_to_user failed\\n");
-            ret = -EFAULT;
-        }
-        ksu_put_app_profile(profile);
-    }
-    return ret;
-}"""
-
-    old_set = """static int do_set_app_profile(void __user *arg)
-{
-    struct ksu_set_app_profile_cmd cmd;
-    int ret;
-
-    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
-        pr_err("set_app_profile: copy_from_user failed\\n");
-        return -EFAULT;
-    }
-
-    ret = ksu_set_app_profile(&cmd.profile);
-    if (!ret)
-        ksu_persistent_allow_list();
-    return ret;
-}"""
-
-    new_set = """static int do_set_app_profile(void __user *arg)
-{
-    struct ksu_set_app_profile_cmd cmd = { 0 };
-    u32 version;
-    size_t profile_size;
-    int ret;
-
-    if (copy_from_user(&version,
-               (char __user *)arg +
-               offsetof(struct ksu_set_app_profile_cmd,
-                    profile.version),
-               sizeof(version))) {
-        pr_err("set_app_profile: copy profile version from user failed\\n");
-        return -EFAULT;
-    }
-
-    profile_size = app_profile_userspace_size(version);
-    if (!profile_size) {
-        pr_err("set_app_profile: unsupported profile version: %u\\n",
-            version);
-        return -EINVAL;
-    }
-
-    if (copy_from_user(&cmd.profile,
-               (char __user *)arg +
-               offsetof(struct ksu_set_app_profile_cmd, profile),
-               profile_size)) {
-        pr_err("set_app_profile: copy_from_user failed\\n");
-        return -EFAULT;
-    }
-
-    ret = ksu_set_app_profile(&cmd.profile);
-    if (!ret)
-        ksu_persistent_allow_list();
-    return ret;
-}"""
-
-    if old_get not in t or old_set not in t:
-        print("WARNING: dispatch get/set_app_profile shape changed; skip ABI compat")
+"""
+    if "static int do_get_app_profile" in t:
+        t = t.replace("static int do_get_app_profile", helpers + "\nstatic int do_get_app_profile", 1)
+    else:
+        print("WARNING: do_get_app_profile not found in dispatch.c")
         return
-    t = t.replace(old_get, new_get, 1).replace(old_set, new_set, 1)
+
+    get_target = "static int do_get_app_profile(void __user *arg)"
+    print("[+] dispatch: helpers injected successfully")
     p.write_text(t)
-    print("[+] dispatch: accept manager app-profile ABI v2/v3 (776 bytes)")
 
 if not allowlist.exists() or not dispatch.exists():
     print(f"WARNING: SukiSU source layout unexpected; skip manager compat (Checked paths: {allowlist.parent})")
@@ -512,12 +372,10 @@ else:
     patch_allowlist(allowlist)
     patch_ksud(ksud)
     print("[*] rules.c left unchanged (boot-critical SELinux update path)")
-    patch_dispatch(dispatch)
     print("[+] SukiSU manager v3/v4 compat logic applied")
 
 PY
 fi
-
 # ==========================================
 # Baseband-guard Setup
 # ==========================================
