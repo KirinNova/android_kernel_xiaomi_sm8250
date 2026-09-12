@@ -37,7 +37,7 @@ jobs:
       - name: Checkout successful SUSFS 2.3 kernel baseline
         uses: actions/checkout@v4
         with:
-          ref: android17-aptusitu
+          ref: sukisu-selinux-hide-fix
           fetch-depth: 1
 
       - name: Set up Environment
@@ -91,13 +91,15 @@ jobs:
           
           FAILED=0
 
+          # 1. 验证 SUSFS 版本
           if grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h; then
             echo "[OK] SUSFS v2.3.0 header verified."
           else
             echo "[ERROR] SUSFS v2.3.0 header not found!"
             FAILED=1
           fi
-          
+
+          # 2. 验证 exec.c 钩子
           if grep -Fq 'susfs_is_current_proc_no_su()' fs/exec.c; then
             echo "[OK] fs/exec.c hook verified."
           else
@@ -105,6 +107,7 @@ jobs:
             FAILED=1
           fi
 
+          # 3. 验证 open.c 钩子
           if grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/open.c; then
             echo "[OK] fs/open.c hook verified."
           else
@@ -112,6 +115,7 @@ jobs:
             FAILED=1
           fi
 
+          # 4. 验证 sucompat 对齐情况
           SUC_PATH=$(find . -name 'sucompat.c' | head -n1)
           if [ -n "$SUC_PATH" ] && grep -Fq 'int ksu_handle_faccessat(int *dfd, struct filename **filename' "$SUC_PATH"; then
             echo "[OK] ReSukiSU sucompat handlers aligned successfully."
