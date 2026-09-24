@@ -100,21 +100,39 @@ jobs:
           echo "=== Pre-Build Ccache Stats ==="
           ccache -s
 
+      - name: Modify kernel version string to 5.15.325-KirinNova
+        run: |
+          # 1. Force override KERNELRELEASE in Makefile to disguise the kernel version safely
+          sed -i '/^VERSION =/a KERNELRELEASE = 5.15.325-KirinNova' Makefile
+          
+          # 2. Clean local version auto generation and suffixes in defconfigs
+          find arch/arm64/configs -maxdepth 1 -type f -name "*defconfig" | while read -r file; do
+            sed -i '/CONFIG_LOCALVERSION_AUTO/d' "$file"
+            echo 'CONFIG_LOCALVERSION_AUTO=n' >> "$file"
+            sed -i '/CONFIG_LOCALVERSION=/d' "$file"
+            echo 'CONFIG_LOCALVERSION=""' >> "$file"
+          done
+          
+          # 3. Disable git status suffixes (like -dirty) in localversion script
+          echo '#!/bin/sh' > scripts/setlocalversion
+          echo 'echo ""' >> scripts/setlocalversion
+          chmod +x scripts/setlocalversion
+
       - name: Run Build Script
         run: |
           chmod +x build_kernel.sh
           export LOCALVERSION=""
           export USE_CCACHE=1
           export CCACHE_EXEC=$(which ccache)
-            
+          
           DEVICE="${{ github.event.inputs.device || 'alioth' }}"
           KSU="${{ github.event.inputs.ksu || 'true' }}"
           TARGET_OS="${{ github.event.inputs.target_os || 'miui' }}"
-            
+          
           ARGS="$DEVICE"
           [ "$KSU" == "true" ] && ARGS="$ARGS ksu"
           [ "$TARGET_OS" != "both" ] && ARGS="$ARGS $TARGET_OS"
-            
+          
           echo "Executing command: ./build_kernel.sh $ARGS"
           ./build_kernel.sh $ARGS
 
