@@ -100,93 +100,20 @@ jobs:
           echo "=== Pre-Build Ccache Stats ==="
           ccache -s
 
-      - name: Modify kernel version string & Spoof Kernel Release
+      - name: Modify kernel version string (Remove cip/st extra suffix)
         run: |
-          export SPOOF_KERNEL_VERSION=true
-          export SPOOFED_KERNEL_VERSION="5.15.325"
-          export KERNEL_NAME="Ikun"
-          export KERNEL_VERSION="KirinNova"
-          export KERNEL_ROOT="$(pwd)"
-
-          requested=${SPOOFED_KERNEL_VERSION:?SPOOFED_KERNEL_VERSION is required when spoofing is enabled}
-
-          if [[ ! "$requested" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
-            echo '[ERROR] spoofed kernel version must use numeric major.minor.sublevel format, for example 4.9.337' >&2
-            exit 1
-          fi
-
-          IFS=. read -r major minor sublevel <<< "$requested"
-
-          read_make_version() {
-            local key=$1
-            sed -n "s/^${key}[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p" Makefile | head -n1
-          }
-
-          original_major=$(read_make_version VERSION)
-          original_minor=$(read_make_version PATCHLEVEL)
-          original_sublevel=$(read_make_version SUBLEVEL)
-          [[ -n "$original_major" && -n "$original_minor" && -n "$original_sublevel" ]] || {
-            echo '[ERROR] unable to read VERSION/PATCHLEVEL/SUBLEVEL from the kernel Makefile' >&2
-            exit 1
-          }
-
-          if [[ "$major.$minor" != "$original_major.$original_minor" ]]; then
-            echo "[INFO] cross-family release spoof requested ($original_major.$original_minor -> $major.$minor); compile-time kernel version remains unchanged" >&2
-          fi
-
-          KERNELRELEASE_OVERRIDE_BASE="$requested"
-
-          if [[ -n "${GITHUB_ENV:-}" ]]; then
-            printf 'KERNEL_VERSION_SPOOF_STATUS=deferred-release-only\nKERNEL_SPOOFED_VERSION=%s\nKERNELRELEASE_OVERRIDE_BASE=%s\n' "$requested" "$requested" >> "$GITHUB_ENV"
-          fi
-          printf '[+] Kernel release spoof queued: %s (source compile-time version remains %s)\n' "$requested" "$original_major.$original_minor.$original_sublevel"
-
-          out=${OUT_DIR:-out}
-          export OUT_DIR="$out"
-          export KBUILD_BUILD_TIMESTAMP=${BUILD_TIME:-$(date -u '+%Y-%m-%d %H:%M:%S')}
-          export LOCALVERSION=
-
-          mkdir -p "$out"
-          touch "$out/.config"
-
-          kernelrelease_args=()
-          [[ -n "${KERNELRELEASE_OVERRIDE_BASE:-}" ]] && kernelrelease_args+=("KERNELRELEASE=${KERNELRELEASE_OVERRIDE_BASE}")
-
-          for localversion_file in "$KERNEL_ROOT"/localversion-cip* "$KERNEL_ROOT"/localversion-st*; do
-            [[ -f "$localversion_file" ]] || continue
-            localversion_name=$(basename "$localversion_file")
-            mv "$localversion_file" "$KERNEL_ROOT/.sukisu-disabled-$localversion_name"
+          sed -i 's|^EXTRAVERSION =.*|EXTRAVERSION = -Ikun-KirinNova|' Makefile
+            
+          find arch/arm64/configs -maxdepth 1 -type f -name "*defconfig" | while read -r file; do
+            sed -i '/CONFIG_LOCALVERSION_AUTO/d' "$file"
+            echo 'CONFIG_LOCALVERSION_AUTO=n' >> "$file"
+            sed -i '/CONFIG_LOCALVERSION=/d' "$file"
+            echo 'CONFIG_LOCALVERSION=""' >> "$file"
           done
-
-          set_config() {
-            local key=$1 value=$2
-            sed -i -E "/^(# )?${key}(=.*| is not set)$/d" "$out/.config"
-            if [[ "$value" == n ]]; then
-              printf '# %s is not set\n' "$key" >> "$out/.config"
-            else
-              printf '%s=%s\n' "$key" "$value" >> "$out/.config"
-            fi
-          }
-
-          set_config CONFIG_LOCALVERSION_AUTO n
-
-          date_part=$(date -u -d "$KBUILD_BUILD_TIMESTAMP" +%Y%m%d 2>/dev/null || date -u +%Y%m%d)
-          local="-${KERNEL_NAME}-${KERNEL_VERSION}-${date_part}"
-
-          sed -i '/^CONFIG_LOCALVERSION=/d' "$out/.config"
-          printf 'CONFIG_LOCALVERSION="%s"\n' "$local" >> "$out/.config"
-
-          if [[ -n "${KERNELRELEASE_OVERRIDE_BASE:-}" ]]; then
-            kernelrelease_args=("KERNELRELEASE=${KERNELRELEASE_OVERRIDE_BASE}${local}")
-          fi
-
-          release=$(make O="$out" "${kernelrelease_args[@]}" -s kernelrelease)
-          [[ ${#release} -le 64 ]] || { echo "[ERROR] kernelrelease is ${#release} characters (>64): $release" >&2; exit 1; }
-
-          if [[ -n "${GITHUB_ENV:-}" ]]; then
-            echo "KERNEL_RELEASE=$release" >> "$GITHUB_ENV"
-            printf 'LOCALVERSION=\n' >> "$GITHUB_ENV"
-          fi
+            
+          echo '#!/bin/sh' > scripts/setlocalversion
+          echo 'echo ""' >> scripts/setlocalversion
+          chmod +x scripts/setlocalversion
 
       - name: Run Build Script
         run: |
