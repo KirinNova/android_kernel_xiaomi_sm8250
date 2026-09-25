@@ -414,7 +414,7 @@ int kcompat_sys_statfs64(const char __user * pathname, compat_size_t sz, struct 
 	if (sz != sizeof(*buf))
 		return -EINVAL;
 
-	error = user_path_at(AT_FDCWD, pathname, LOOKUP_FOLLOW|LOOKUP_AUTOMOUNT, &path) ? : vfs_statfs(&path, &tmp);
+	error = user_statfs(pathname, &tmp);
 	if (!error)
 		error = put_compat_statfs64(buf, &tmp);
 	return error;
