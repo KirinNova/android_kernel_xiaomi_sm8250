@@ -75,7 +75,7 @@ static int statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf)
 extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);
 extern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);
 
-int susfs_calculate_f_flags(struct vfsmount *mnt)
+int calculate_f_flags_wrapper(struct vfsmount *mnt)
 {
 	return calculate_f_flags(mnt);
 }
@@ -190,18 +190,18 @@ static int do_statfs_native(struct kstatfs *st, struct statfs __user *p)
 		memset(&buf, 0, sizeof(buf));
 		if (sizeof buf.f_blocks == 4) {
 			if ((st->f_blocks | st->f_bfree | st->f_bavail |
-			     st->f_bsize | st->f_frsize) &
-			    0xffffffff00000000ULL)
+				 st->f_bsize | st->f_frsize) &
+				0xffffffff00000000ULL)
 				return -EOVERFLOW;
 			/*
 			 * f_files and f_ffree may be -1; it's okay to stuff
 			 * that into 32 bits
 			 */
 			if (st->f_files != -1 &&
-			    (st->f_files & 0xffffffff00000000ULL))
+				(st->f_files & 0xffffffff00000000ULL))
 				return -EOVERFLOW;
 			if (st->f_ffree != -1 &&
-			    (st->f_ffree & 0xffffffff00000000ULL))
+				(st->f_ffree & 0xffffffff00000000ULL))
 				return -EOVERFLOW;
 		}
 
@@ -325,7 +325,7 @@ static int put_compat_statfs(struct compat_statfs __user *ubuf, struct kstatfs *
 	struct compat_statfs buf;
 	if (sizeof ubuf->f_blocks == 4) {
 		if ((kbuf->f_blocks | kbuf->f_bfree | kbuf->f_bavail |
-		     kbuf->f_bsize | kbuf->f_frsize) & 0xffffffff00000000ULL)
+			 kbuf->f_bsize | kbuf->f_frsize) & 0xffffffff00000000ULL)
 			return -EOVERFLOW;
 		/* f_files and f_ffree may be -1; it's okay
 		 * to stuff that into 32 bits */
