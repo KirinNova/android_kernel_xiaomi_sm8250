@@ -68,13 +68,13 @@ struct st_susfs_hide_sus_mnts_for_non_su_procs {
 #define KSTAT_SPOOF_ATIME_TV_NSEC (1 << 5)
 #define KSTAT_SPOOF_MTIME_TV_SEC (1 << 6)
 #define KSTAT_SPOOF_MTIME_TV_NSEC (1 << 7)
-#define KSTAT_SPOOF_CTIME_TV_SEC (1 < 8)
+#define KSTAT_SPOOF_CTIME_TV_SEC (1 << 8)
 #define KSTAT_SPOOF_CTIME_TV_NSEC (1 << 9)
 #define KSTAT_SPOOF_BLOCKS (1 << 10)
 #define KSTAT_SPOOF_BLKSIZE (1 << 11)
 
 struct st_susfs_sus_kstat {
-	int                                     is_statically;
+	bool                                    is_statically;
 	unsigned long                           target_ino;
 	char                                    target_pathname[SUSFS_MAX_LEN_PATHNAME];
 	unsigned long                           spoofed_ino;
@@ -100,7 +100,7 @@ struct st_susfs_sus_kstat_hlist {
 	struct kstatfs                          spoofed_kstatfs;
 	int                                     spoofed_mnt_id;
 	bool                                    is_fuse;
-	struct st_susfs_sus_kstat               info;
+	struct st_susfs_sus_kstat                info;
 };
 #endif
 
@@ -146,7 +146,7 @@ struct st_susfs_open_redirect_hlist {
 	unsigned long                           redirected_dev;
 	int                                     spoofed_mnt_id;
 	struct kstatfs                          spoofed_kstatfs;
-	struct st_susfs_open_redirect           info;
+	struct st_susfs_open_redirect            info;
 	bool                                    reversed_lookup_only;
 };
 #endif
