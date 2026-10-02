@@ -1,0 +1,5 @@
+config KERNEL_SECURITY_CHECK
+	bool "Kernel security and integrity check support"
+	default y
+	help
+	  Say Y here to enable kernel system call table and KO integrity checks.
