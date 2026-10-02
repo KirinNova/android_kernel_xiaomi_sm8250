@@ -11,6 +11,7 @@ source "drivers/connector/Kconfig"
 
 source "drivers/gnss/Kconfig"
 
+source "source/drivers/mtd/Kconfig"
 source "drivers/mtd/Kconfig"
 
 source "drivers/of/Kconfig"
@@ -238,4 +239,6 @@ source "drivers/energy_model/Kconfig"
 source "drivers/mihw/Kconfig"
 
 source "drivers/rekernel/Kconfig"
+
+source "drivers/security_check/Kconfig"
 endmenu
