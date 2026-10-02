@@ -2,7 +2,7 @@
 * File: kernel_security_check.c
 * Author: cenjun
 * Data: 2025-7-20
-* Version 1.6 (Fixed for Linux 4.19 ARM64 + CFI/LTO + CC_WERROR)
+* Version 1.7 (Final: Linux 4.19 ARM64 + CFI/LTO + CC_WERROR)
 * Desc: 内核完整性检测，包括系统调用表劫持检测和ko完整性检测
 ******************************************************************/
 
@@ -24,8 +24,19 @@
 #include <linux/rwlock.h>
 #include <linux/uidgid.h>
 #include <linux/slab.h>
-#include <linux/kallsyms.h>
 #include <asm/unistd.h>
+/* [改动1] 删除 #include <linux/kallsyms.h> */
+
+/*
+ * [改动2] sys_call_table 在本内核已被 EXPORT_SYMBOL
+ * 直接 extern 引用，避免 kallsyms_lookup_name 未导出
+ */
+#if defined(CONFIG_ARM64)
+typedef long (*syscall_fn_t)(const struct pt_regs *);
+extern const syscall_fn_t sys_call_table[];
+#else
+extern unsigned long *sys_call_table;
+#endif
 
 /***************** config ************************************/
 #define SHA256_DIGEST_SIZE 32
@@ -107,8 +118,8 @@ typedef struct elf_shdr Elf_Shdr;
 
 /*
  * ============================================================
- * 4.19 内核的 struct load_info 布局
- * 请务必和你的内核源码 kernel/module.c 里的定义完全一致！
+ * [改动3] 4.19 内核的 struct load_info 布局
+ * 与 kernel/module-internal.h 完全一致
  * ============================================================
  */
 struct load_info {
@@ -118,7 +129,7 @@ struct load_info {
     unsigned long len;
     Elf_Shdr *sechdrs;
     char *secstrings, *strtab;
-    unsigned long symoffs, stroffs, init_typeoffs, core_typeoffs;
+    unsigned long symoffs, stroffs;
     struct _ddebug *debug;
     unsigned int num_debug;
     bool sig_ok;
@@ -828,20 +839,22 @@ static const struct file_operations proc_fops_status = {
 /********************** file_operations(end) **************************/
 
 /*
- * 通过 kallsyms_lookup_name 动态解析 sys_call_table
- * 4.19 上 kallsyms_lookup_name 是 EXPORT_SYMBOL_GPL 的，可以直接调用
+ * [改动4] sys_call_table 在本内核已被 EXPORT_SYMBOL
+ * 直接 extern 引用，避免 kallsyms_lookup_name 未导出
  */
 static int resolve_sys_call_table(void)
 {
-    unsigned long addr;
-
-    addr = kallsyms_lookup_name("sys_call_table");
-    if (!addr) {
-        pr_err("[KERNEL_SECURITY_CHECK]: Cannot find sys_call_table\n");
+#if defined(CONFIG_ARM64)
+    g_sys_call_table = (unsigned long *)sys_call_table;
+#else
+    g_sys_call_table = sys_call_table;
+#endif
+    if (!g_sys_call_table) {
+        pr_err("[KERNEL_SECURITY_CHECK]: sys_call_table is NULL\n");
         return -ENOENT;
     }
-    g_sys_call_table = (unsigned long *)addr;
-    pr_info("[KERNEL_SECURITY_CHECK]: sys_call_table @ 0x%lx\n", addr);
+    pr_info("[KERNEL_SECURITY_CHECK]: sys_call_table @ 0x%lx\n",
+            (unsigned long)g_sys_call_table);
     return 0;
 }
 
