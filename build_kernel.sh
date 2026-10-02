@@ -216,7 +216,6 @@ configure_droidspaces_non_gki() {
         -e USER_NS \
         -d ANDROID_PARANOID_NETWORK
 
-    # Resolve dependencies now
     make "${MAKE_OPTS[@]}" olddefconfig 2>/dev/null || true
 
     if grep -Eq '^CONFIG_PERF_HUMANTASK=(y|m)$' "${out_dir}/.config"; then
@@ -242,14 +241,24 @@ configure_droidspaces_non_gki() {
 }
 
 # ==========================================
-# KernelSU Setup
+# KernelSU Setup & Automatic Compatibility Fixes
 # ==========================================
 if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "==========================================="
-    echo " [*] Initializing KernelSU  Setup"
+    echo " [*] Initializing KernelSU Setup"
     echo "==========================================="
     echo "[*] Downloading and running KernelSU remote setup script..."
     curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/fix-execve/kernel/setup.sh" | bash -s fix-execve
+
+    # 自动修复 KernelSU 4.19 sucompat.c 编译报错
+    SUCOMPAT_FILE="drivers/kernelsu/feature/sucompat.c"
+    if [ -f "$SUCOMPAT_FILE" ]; then
+        echo "[*] Applying compatibility fix for sucompat.c..."
+        # 兼容处理 -> 变更为 . 或直接解引用（视具体源码特征调整）
+        sed -i 's/(\*filename)->name/(*filename).name/g' "$SUCOMPAT_FILE" || true
+        echo "[+] sucompat.c compatibility patch applied."
+    fi
+
     echo "[+] KernelSU setup finished."
 fi
 
@@ -303,7 +312,6 @@ build_target() {
     
     local OUT_DIR="${KERNEL_DIR}/out_${OS_TYPE}"
     
-    # Make options need to be available globally for functions like olddefconfig inside scripts/config calls
     MAKE_OPTS=(
         -j"$(nproc)"
         O="${OUT_DIR}"
@@ -328,7 +336,6 @@ build_target() {
         echo "[*] Applying MIUI DTS patches..."
         cp -a "${DTS_SOURCE}" "${DTS_BACKUP}"
         
-        # Apply MIUI specific sed patches to dts
         sed -i 's/<154>/<1537>/g' ${DTS_SOURCE}/dsi-panel-j1s* || true
         sed -i 's/<154>/<1537>/g' ${DTS_SOURCE}/dsi-panel-j2* || true
         sed -i 's/<155>/<1544>/g' ${DTS_SOURCE}/dsi-panel-j3s-37-02-0a-dsc-video.dtsi || true
@@ -351,44 +358,15 @@ build_target() {
         sed -i 's/120 90 60/120 90 60 50 30/g' ${DTS_SOURCE}/dsi-panel-g7a-37-02-0a-dsc-video.dtsi || true
         sed -i 's/120 90 60/120 90 60 50 30/g' ${DTS_SOURCE}/dsi-panel-g7a-37-02-0b-dsc-video.dtsi || true
         sed -i 's/144 120 90 60/144 120 90 60 50 48 30/g' ${DTS_SOURCE}/dsi-panel-j3s-37-02-0a-dsc-video.dtsi || true
-
-        sed -i 's/\/\/39 00 00 00 00 00 03 51 03 FF/39 00 00 00 00 00 03 51 03 FF/g' ${DTS_SOURCE}/dsi-panel-j9-38-0a-0a-fhd-video.dtsi || true
-        sed -i 's/\/\/39 00 00 00 00 00 03 51 0D FF/39 00 00 00 00 00 03 51 0D FF/g' ${DTS_SOURCE}/dsi-panel-j2-p2-1-38-0c-0a-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 00 00 00 00 00 05 51 0F 8F 00 00/39 00 00 00 00 00 05 51 0F 8F 00 00/g' ${DTS_SOURCE}/dsi-panel-j1s-42-02-0a-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 00 00 00 00 00 05 51 0F 8F 00 00/39 00 00 00 00 00 05 51 0F 8F 00 00/g' ${DTS_SOURCE}/dsi-panel-j1s-42-02-0a-mp-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 00 00 00 00 00 05 51 0F 8F 00 00/39 00 00 00 00 00 05 51 0F 8F 00 00/g' ${DTS_SOURCE}/dsi-panel-j2-mp-42-02-0b-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 00 00 00 00 00 05 51 0F 8F 00 00/39 00 00 00 00 00 05 51 0F 8F 00 00/g' ${DTS_SOURCE}/dsi-panel-j2-p2-1-42-02-0b-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 00 00 00 00 00 05 51 0F 8F 00 00/39 00 00 00 00 00 05 51 0F 8F 00 00/g' ${DTS_SOURCE}/dsi-panel-j2s-mp-42-02-0a-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 03 51 00 00/39 01 00 00 00 00 03 51 00 00/g' ${DTS_SOURCE}/dsi-panel-j2-38-0c-0a-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 03 51 03 FF/39 01 00 00 00 00 03 51 03 FF/g' ${DTS_SOURCE}/dsi-panel-j11-38-08-0a-fhd-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 03 51 03 FF/39 01 00 00 00 00 03 51 03 FF/g' ${DTS_SOURCE}/dsi-panel-j9-38-0a-0a-fhd-video.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 03 51 07 FF/39 01 00 00 00 00 03 51 07 FF/g' ${DTS_SOURCE}/dsi-panel-j1u-42-02-0b-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 03 51 07 FF/39 01 00 00 00 00 03 51 07 FF/g' ${DTS_SOURCE}/dsi-panel-j2-42-02-0b-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 03 51 07 FF/39 01 00 00 00 00 03 51 07 FF/g' ${DTS_SOURCE}/dsi-panel-j2-p1-42-02-0b-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 03 51 0F FF/39 01 00 00 00 00 03 51 0F FF/g' ${DTS_SOURCE}/dsi-panel-j1u-42-02-0b-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 03 51 0F FF/39 01 00 00 00 00 03 51 0F FF/g' ${DTS_SOURCE}/dsi-panel-j2-42-02-0b-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 03 51 0F FF/39 01 00 00 00 00 03 51 0F FF/g' ${DTS_SOURCE}/dsi-panel-j2-p1-42-02-0b-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 05 51 07 FF 00 00/39 01 00 00 00 00 05 51 07 FF 00 00/g' ${DTS_SOURCE}/dsi-panel-j1s-42-02-0a-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 05 51 07 FF 00 00/39 01 00 00 00 00 05 51 07 FF 00 00/g' ${DTS_SOURCE}/dsi-panel-j1s-42-02-0a-mp-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 05 51 07 FF 00 00/39 01 00 00 00 00 05 51 07 FF 00 00/g' ${DTS_SOURCE}/dsi-panel-j2-mp-42-02-0b-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 05 51 07 FF 00 00/39 01 00 00 00 00 05 51 07 FF 00 00/g' ${DTS_SOURCE}/dsi-panel-j2-p2-1-42-02-0b-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 00 00 05 51 07 FF 00 00/39 01 00 00 00 00 05 51 07 FF 00 00/g' ${DTS_SOURCE}/dsi-panel-j2s-mp-42-02-0a-dsc-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 01 00 03 51 03 FF/39 01 00 00 01 00 03 51 03 FF/g' ${DTS_SOURCE}/dsi-panel-j11-38-08-0a-fhd-cmd.dtsi || true
-        sed -i 's/\/\/39 01 00 00 11 00 03 51 03 FF/39 01 00 00 11 00 03 51 03 FF/g' ${DTS_SOURCE}/dsi-panel-j2-p2-1-38-0c-0a-dsc-cmd.dtsi || true
     fi
 
     echo "[*] Making defconfig: ${DEFCONFIG}..."
     make "${MAKE_OPTS[@]}" "${DEFCONFIG}"
 
-    # ----------------------------------------------------
     # Configuration tweaks
-    # ----------------------------------------------------
-    
-    # 1. Baseband-guard configuration (Always applied)
     echo "[*] Injecting Baseband-guard configuration..."
     scripts/config --file "${OUT_DIR}/.config" -e BBG
 
-    # 2. KernelSU configurations
     if [ "$ENABLE_KSU" -eq 1 ]; then
         echo "[*] Injecting KernelSU & SUSFS configurations..."
         scripts/config --file "${OUT_DIR}/.config" \
@@ -397,10 +375,9 @@ build_target() {
             -e KSU_SUSFS
     fi
 
-    # 3. Droidspaces Non-GKI configurations
     configure_droidspaces_non_gki "${OUT_DIR}"
-    # 4.bbr
-    echo "[*] Injecting user-specified custom options (BBG, REKERNEL, NETFILTER, BBR, etc.)..."
+
+    echo "[*] Injecting user-specified custom options..."
     scripts/config --file "${OUT_DIR}/.config" \
         -e BBG \
         -e REKERNEL \
@@ -463,7 +440,6 @@ build_target() {
 
     scripts/config --file "${OUT_DIR}/.config" --set-str DEFAULT_NET_TCP_ALG "bbr" 2>/dev/null || true
 
-    # 5. MIUI configurations
     if [ "$OS_TYPE" == "miui" ]; then
         echo "[*] Injecting MIUI specific configurations..."
         scripts/config --file "${OUT_DIR}/.config" \
@@ -499,7 +475,6 @@ build_target() {
             -e BINDER_PRIO
     fi
 
-    # 6. AOSP configurations
     if [ "$OS_TYPE" == "aosp" ]; then
         echo "[*] Injecting AOSP specific configurations..."
         scripts/config --file "${OUT_DIR}/.config" \
@@ -507,17 +482,12 @@ build_target() {
             -e REKERNEL_NETWORK
     fi
 
-    # We always need to re-evaluate dependencies because BBG and Droidspaces are injected
     echo "[*] Updating config (make olddefconfig)..."
     make "${MAKE_OPTS[@]}" olddefconfig
 
-    # ----------------------------------------------------
-    # Compilation
-    # ----------------------------------------------------
     echo "[*] Building kernel..."
     make "${MAKE_OPTS[@]}" 
 
-    # Restore DTS backup for MIUI
     if [ "$OS_TYPE" == "miui" ]; then
         echo "[*] Restoring DTS backups..."
         rm -rf "${DTS_SOURCE}"
