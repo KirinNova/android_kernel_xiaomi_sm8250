@@ -2,8 +2,8 @@
 * File: kernel_security_check.c
 * Author: cenjun
 * Data: 2025-7-20
-* Version 1.4 (Fixed compile & runtime issues for Linux 4.19 ARM64)
-* Desc: 和平精英需求-内核完整性检测，包括系统调用表劫持检测和ko完整性检测
+* Version 1.5 (Fixed for Linux 4.19 ARM64, K40 alioth)
+* Desc: 内核完整性检测，包括系统调用表劫持检测和ko完整性检测
 ******************************************************************/
 
 #include <linux/module.h>
@@ -22,8 +22,9 @@
 #include <linux/hashtable.h>
 #include <linux/jhash.h>
 #include <linux/rwlock.h>
-#include <linux/uidgid.h>          /* [FIX] __kuid_val */
-#include <linux/slab.h>             /* [FIX] kzalloc/kmalloc */
+#include <linux/uidgid.h>
+#include <linux/slab.h>
+#include <linux/kallsyms.h>
 #include <asm/unistd.h>
 
 /***************** config ************************************/
@@ -37,13 +38,8 @@
 #define KO_EVENT_FLAG 10000
 #define BOOT_COMPLETE 1
 
-#if IS_ENABLED(CONFIG_DYNAMIC_DEBUG) && \
-    IS_ENABLED(CONFIG_DEBUG_OBJECTS) && \
-    IS_ENABLED(CONFIG_DEBUG_KMEMLEAK)
+/* 强制打开调试触发接口（4.19 上不容易同时开 3 个 DEBUG config） */
 #define CHECK_DEBUG 1
-#else
-#define CHECK_DEBUG 0
-#endif
 
 struct hash_entry {
     char filename[FILENAME_LEN];
@@ -61,10 +57,7 @@ static rwlock_t hashtable_lock;
 static rwlock_t ko_events_list_rwlock;
 static rwlock_t systbl_events_list_rwlock;
 
-/*
- * [FIX] __NR_syscalls 在 ARM64 未定义，使用 NR_syscalls (asm-generic/unistd.h)
- * 优先使用 __NR_syscalls，若未定义则回退 NR_syscalls。
- */
+/* __NR_syscalls 在 ARM64 未定义，使用 NR_syscalls */
 #ifdef __NR_syscalls
 #define SYS_CALL_TBL_SIZE  __NR_syscalls
 #elif defined(NR_syscalls)
@@ -81,15 +74,7 @@ static unsigned long trigger_syscall_func_addr[SYS_CALL_TBL_SIZE] = {0};
 
 uint8_t hash_syscall_table[SHA256_DIGEST_SIZE] = {0};
 
-/*
- * [FIX] ARM64 使用 syscall_fn_t 数组，x86 使用 unsigned long *。
- * sys_call_table 通常未导出，需要通过 kallsyms 动态解析（见 init）。
- */
-#if defined(CONFIG_ARM64)
-typedef long (*syscall_fn_t)(const struct pt_regs *);
-#endif
-
-/* [FIX] 不再 extern sys_call_table，改为运行时通过 kallsyms 解析 */
+/* sys_call_table 通过 kallsyms 动态解析 */
 static unsigned long *g_sys_call_table = NULL;
 
 static struct delayed_work check_work;
@@ -110,8 +95,7 @@ static struct crypto_shash *g_sha256_tfm = NULL;
 /***********************config(end)******************************/
 
 /*
- * [FIX] Elf_Ehdr / Elf_Shdr 在内核中实际叫 struct elfhdr / struct elf_shdr。
- * 提供 typedef 别名，同时兼容可能存在的 Elf_Ehdr 定义。
+ * Elf_Ehdr / Elf_Shdr 在内核中实际叫 struct elfhdr / struct elf_shdr
  */
 #ifndef Elf_Ehdr
 typedef struct elfhdr Elf_Ehdr;
@@ -120,7 +104,13 @@ typedef struct elfhdr Elf_Ehdr;
 typedef struct elf_shdr Elf_Shdr;
 #endif
 
-struct load_info { //get ko info
+/*
+ * ============================================================
+ * 4.19 内核的 struct load_info 布局
+ * 请务必和你的内核源码 kernel/module.c 里的定义完全一致！
+ * ============================================================
+ */
+struct load_info {
     const char *name;
     struct module *mod;
     Elf_Ehdr *hdr;
@@ -128,17 +118,11 @@ struct load_info { //get ko info
     Elf_Shdr *sechdrs;
     char *secstrings, *strtab;
     unsigned long symoffs, stroffs, init_typeoffs, core_typeoffs;
+    struct _ddebug *debug;
+    unsigned int num_debug;
     bool sig_ok;
 #ifdef CONFIG_KALLSYMS
     unsigned long mod_kallsyms_init_off;
-#endif
-#ifdef CONFIG_MODULE_DECOMPRESS
-#ifdef CONFIG_MODULE_STATS
-    unsigned long compressed_len;
-#endif
-    struct page **pages;
-    unsigned int max_pages;
-    unsigned int used_pages;
 #endif
     struct {
         unsigned int sym, str, mod, vers, info, pcpu;
@@ -184,14 +168,14 @@ int add_systbl_event(const char *event_str)
 {
     int ret = 0;
     char *event_new_str;
-    unsigned long flags;      /* [FIX] 统一使用 irqsave，避免中断上下文死锁 */
+    unsigned long flags;
     int i;
 
     if (!event_str) {
         pr_err("[KERNEL_SECURITY_CHECK]: add_systbl_event [event_str] is NULL.\n");
         return -EINVAL;
     }
-    event_new_str = kstrdup(event_str, GFP_ATOMIC);   /* [FIX] 可能被中断上下文调用 */
+    event_new_str = kstrdup(event_str, GFP_ATOMIC);
     if (!event_new_str) {
         pr_err("[KERNEL_SECURITY_CHECK]:Failed to allocate memory for systbl event string\n");
         return -ENOMEM;
@@ -215,7 +199,6 @@ out_unlock:
     return ret;
 }
 
-/* [FIX] 参数类型与 crypto_shash_digest 严格一致 */
 static int do_hash(const void *data, unsigned int data_len, uint8_t *hash)
 {
     int ret;
@@ -392,7 +375,7 @@ static char *next_tag_safe(char *string, unsigned long *secsize)
         (*secsize)--;
     }
     if (*secsize == 0) {
-        return NULL;   /* [FIX] 避免返回指向末尾的指针导致死循环 */
+        return NULL;
     }
     return string;
 }
@@ -477,11 +460,6 @@ bool check_ko_exist_in_hash_tbl_nolock(const char *filename)
     return false;
 }
 
-/*
- * [FIX] 原实现返回 entry 内部指针，解锁后可能 use-after-free。
- * 改为把 hash 拷贝到调用者缓冲区。
- * 返回 0 成功，-ENOENT 未找到。
- */
 int find_hash_by_name(const char *filename, unsigned char *out_hash)
 {
     u32 hash_key = jhash(filename, strlen(filename), 0);
@@ -809,7 +787,7 @@ static ssize_t proc_write_status(struct file *file, const char __user *buffer, s
     }
     if (count < sizeof(int)) {
         pr_err("[KERNEL_SECURITY_CHECK]:Invalid buffer size\n");
-        return -EINVAL;      /* [FIX] 原来继续执行，可能越界读 */
+        return -EINVAL;
     }
     if (copy_from_user(&status, buffer, sizeof(int))) {
         pr_err("[KERNEL_SECURITY_CHECK]:Failed to copy status.\n");
@@ -849,10 +827,8 @@ static const struct file_operations proc_fops_status = {
 /********************** file_operations(end) **************************/
 
 /*
- * [FIX] 通过 kallsyms_lookup_name 动态解析 sys_call_table，
- * 避免链接期 undefined symbol。
- * 注意：5.7+ 内核默认不导出 kallsyms_lookup_name，需先通过 kprobe 获取其地址。
- * 4.19 上 kallsyms_lookup_name 是 EXPORT_SYMBOL 的，可以直接调用。
+ * 通过 kallsyms_lookup_name 动态解析 sys_call_table
+ * 4.19 上 kallsyms_lookup_name 是 EXPORT_SYMBOL_GPL 的，可以直接调用
  */
 static int resolve_sys_call_table(void)
 {
@@ -868,7 +844,7 @@ static int resolve_sys_call_table(void)
     return 0;
 }
 
-static int __init __nocfi ko_integrity_init(void)
+static int __init ko_integrity_init(void)
 {
     int ret = 0;
 
@@ -901,7 +877,6 @@ static int __init __nocfi ko_integrity_init(void)
 
     pr_info("[KERNEL_SECURITY_CHECK]: create /proc/inte_* succeed \n");
 
-    /* [FIX] kprobe 目标函数名兼容：4.19 为 load_module */
     hash_probe.kp.symbol_name = "load_module";
     ret = register_kretprobe(&hash_probe);
     if (ret < 0) {
@@ -917,7 +892,6 @@ static int __init __nocfi ko_integrity_init(void)
         goto init_failed;
     }
 
-    /* [FIX] 动态解析 sys_call_table */
     ret = resolve_sys_call_table();
     if (ret) {
         goto init_failed;
@@ -935,7 +909,7 @@ static int __init __nocfi ko_integrity_init(void)
     INIT_DELAYED_WORK(&check_work, check_task);
     schedule_delayed_work(&check_work, check_interval);
     hash_init(inte_hash_table);
-    pr_info("[KERNEL_SECURITY_CHECK]:init success! , version :0.17\n");
+    pr_info("[KERNEL_SECURITY_CHECK]:init success! , version :0.18\n");
     return ret;
 
 init_failed:
