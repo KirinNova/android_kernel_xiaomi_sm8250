@@ -2,7 +2,7 @@
 * File: kernel_security_check.c
 * Author: cenjun
 * Data: 2025-7-20
-* Version 1.2 (Adapted for In-tree Built-in on Linux 4.19 SM8250)
+* Version 1.4 (Fixed compile & runtime issues for Linux 4.19 ARM64)
 * Desc: 和平精英需求-内核完整性检测，包括系统调用表劫持检测和ko完整性检测
 ******************************************************************/
 
@@ -10,7 +10,6 @@
 #include <linux/kernel.h>
 #include <linux/kprobes.h>
 #include <linux/elf.h>
-#include <asm/module.h>
 #include <linux/init.h>
 #include <crypto/hash.h>
 #include <linux/seq_file.h>
@@ -23,6 +22,8 @@
 #include <linux/hashtable.h>
 #include <linux/jhash.h>
 #include <linux/rwlock.h>
+#include <linux/uidgid.h>          /* [FIX] __kuid_val */
+#include <linux/slab.h>             /* [FIX] kzalloc/kmalloc */
 #include <asm/unistd.h>
 
 /***************** config ************************************/
@@ -60,21 +61,36 @@ static rwlock_t hashtable_lock;
 static rwlock_t ko_events_list_rwlock;
 static rwlock_t systbl_events_list_rwlock;
 
-static unsigned long syscall_func_addr[__NR_syscalls] = {0};
+/*
+ * [FIX] __NR_syscalls 在 ARM64 未定义，使用 NR_syscalls (asm-generic/unistd.h)
+ * 优先使用 __NR_syscalls，若未定义则回退 NR_syscalls。
+ */
+#ifdef __NR_syscalls
+#define SYS_CALL_TBL_SIZE  __NR_syscalls
+#elif defined(NR_syscalls)
+#define SYS_CALL_TBL_SIZE  NR_syscalls
+#else
+#error "Cannot determine syscall table size"
+#endif
+
+static unsigned long syscall_func_addr[SYS_CALL_TBL_SIZE] = {0};
 
 #if CHECK_DEBUG
-static unsigned long trigger_syscall_func_addr[__NR_syscalls] = {0};
+static unsigned long trigger_syscall_func_addr[SYS_CALL_TBL_SIZE] = {0};
 #endif
 
 uint8_t hash_syscall_table[SHA256_DIGEST_SIZE] = {0};
 
-/* 声明外部全局符号，避免静态编译时与 arch/arm64/kernel/sys.c 发生符号重定义冲突 */
+/*
+ * [FIX] ARM64 使用 syscall_fn_t 数组，x86 使用 unsigned long *。
+ * sys_call_table 通常未导出，需要通过 kallsyms 动态解析（见 init）。
+ */
 #if defined(CONFIG_ARM64)
 typedef long (*syscall_fn_t)(const struct pt_regs *);
-extern const syscall_fn_t sys_call_table[];
-#else
-extern unsigned long *sys_call_table;
 #endif
+
+/* [FIX] 不再 extern sys_call_table，改为运行时通过 kallsyms 解析 */
+static unsigned long *g_sys_call_table = NULL;
 
 static struct delayed_work check_work;
 static unsigned long check_interval = 60 * 60 * HZ;
@@ -92,6 +108,17 @@ static int systbl_event_count = 0;
 static int boot_stage = 0;
 static struct crypto_shash *g_sha256_tfm = NULL;
 /***********************config(end)******************************/
+
+/*
+ * [FIX] Elf_Ehdr / Elf_Shdr 在内核中实际叫 struct elfhdr / struct elf_shdr。
+ * 提供 typedef 别名，同时兼容可能存在的 Elf_Ehdr 定义。
+ */
+#ifndef Elf_Ehdr
+typedef struct elfhdr Elf_Ehdr;
+#endif
+#ifndef Elf_Shdr
+typedef struct elf_shdr Elf_Shdr;
+#endif
 
 struct load_info { //get ko info
     const char *name;
@@ -138,7 +165,7 @@ int add_ko_event(const char *event_str)
     if (ko_event_count >= MAX_EVENTS_COUNT) {
         pr_info("[KERNEL_SECURITY_CHECK]:ko Event list full (max [%d] events), replace the oldest event.\n", MAX_EVENTS_COUNT);
         kfree(ko_events_list[0]);
-        for (i = 0; i < ko_event_count-1; i++) {
+        for (i = 0; i < ko_event_count - 1; i++) {
             ko_events_list[i] = ko_events_list[i + 1];
         }
         ko_events_list[ko_event_count - 1] = event_new_str;
@@ -157,18 +184,19 @@ int add_systbl_event(const char *event_str)
 {
     int ret = 0;
     char *event_new_str;
+    unsigned long flags;      /* [FIX] 统一使用 irqsave，避免中断上下文死锁 */
     int i;
 
     if (!event_str) {
         pr_err("[KERNEL_SECURITY_CHECK]: add_systbl_event [event_str] is NULL.\n");
         return -EINVAL;
     }
-    event_new_str = kstrdup(event_str, GFP_KERNEL);
+    event_new_str = kstrdup(event_str, GFP_ATOMIC);   /* [FIX] 可能被中断上下文调用 */
     if (!event_new_str) {
         pr_err("[KERNEL_SECURITY_CHECK]:Failed to allocate memory for systbl event string\n");
         return -ENOMEM;
     }
-    write_lock(&systbl_events_list_rwlock);
+    write_lock_irqsave(&systbl_events_list_rwlock, flags);
     if (systbl_event_count >= MAX_EVENTS_COUNT) {
         pr_info("[KERNEL_SECURITY_CHECK]:systbl Event list full (max [%d] events), replace the oldest event.\n", MAX_EVENTS_COUNT);
         kfree(systbl_events_list[0]);
@@ -182,12 +210,13 @@ int add_systbl_event(const char *event_str)
         systbl_event_count++;
     }
 out_unlock:
-    write_unlock(&systbl_events_list_rwlock);
+    write_unlock_irqrestore(&systbl_events_list_rwlock, flags);
     pr_info("[KERNEL_SECURITY_CHECK]: Added systbl event succeed.\n");
     return ret;
 }
 
-static int do_hash(unsigned long *data, uint32_t data_len, uint8_t *hash)
+/* [FIX] 参数类型与 crypto_shash_digest 严格一致 */
+static int do_hash(const void *data, unsigned int data_len, uint8_t *hash)
 {
     int ret;
     SHASH_DESC_ON_STACK(desc, g_sha256_tfm);
@@ -196,12 +225,12 @@ static int do_hash(unsigned long *data, uint32_t data_len, uint8_t *hash)
         pr_err_ratelimited("[KERNEL_SECURITY_CHECK]: SHA256 TFM not initialized\n");
         return -ENODEV;
     }
-    if (unlikely(!data || !hash)) {
+    if (unlikely(!data || !hash || !data_len)) {
         pr_err("[KERNEL_SECURITY_CHECK]: Invalid parameters for do_hash\n");
         return -EINVAL;
     }
     desc->tfm = g_sha256_tfm;
-    ret = crypto_shash_digest(desc, (u8 *)data, data_len, hash);
+    ret = crypto_shash_digest(desc, (const u8 *)data, data_len, hash);
     if (unlikely(ret)) {
         pr_err("[KERNEL_SECURITY_CHECK]: crypto_shash_digest failed: %d\n", ret);
     }
@@ -238,8 +267,12 @@ static void check_task(struct work_struct *work)
         schedule_delayed_work(&check_work, check_interval);
         return;
     }
+    if (!g_sys_call_table) {
+        pr_err("[KERNEL_SECURITY_CHECK]: sys_call_table not resolved, skip.");
+        goto reschedule;
+    }
     memset(hash_syscall_table, 0xFF, sizeof(hash_syscall_table));
-    ret = do_hash((unsigned long *)sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
+    ret = do_hash(g_sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
     if (ret != 0) {
         pr_err("[KERNEL_SECURITY_CHECK]:do hash for syscall_tbl failed.");
         goto reschedule;
@@ -266,8 +299,12 @@ static void trigger_systbl_check_manual(void)
     int ret;
     char event_str[64];
 
+    if (!g_sys_call_table) {
+        pr_err("[KERNEL_SECURITY_CHECK]: sys_call_table not resolved.");
+        return;
+    }
     memset(hash_syscall_table, 0xFF, sizeof(hash_syscall_table));
-    ret = do_hash((unsigned long *)sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
+    ret = do_hash(g_sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
     if (ret != 0) {
         pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] do hash for syscall_tbl failed.");
     }
@@ -289,21 +326,25 @@ static void trigger_systbl_modify_manual(void)
     int ret;
     char event_str[64];
 
+    if (!g_sys_call_table) {
+        pr_err("[KERNEL_SECURITY_CHECK]: sys_call_table not resolved.");
+        return;
+    }
     memset(hash_syscall_table, 0xFF, sizeof(hash_syscall_table));
-    memcpy(trigger_syscall_func_addr, sys_call_table, sizeof(trigger_syscall_func_addr));
+    memcpy(trigger_syscall_func_addr, g_sys_call_table, sizeof(trigger_syscall_func_addr));
     trigger_syscall_func_addr[0] = (unsigned long)(0);
     ret = do_hash(trigger_syscall_func_addr, sizeof(trigger_syscall_func_addr), hash_syscall_table);
     if (ret != 0) {
-        pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] do hash for syscall_tbl failed.");
+        pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_modify_manual] do hash for syscall_tbl failed.");
     }
     if (memcmp(hash_syscall_table, hash_systbl_init, sizeof(hash_syscall_table)) != 0) {
-        pr_info("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] syscall_tbl maybe modified.");
+        pr_info("[KERNEL_SECURITY_CHECK]:[trigger_systbl_modify_manual] syscall_tbl maybe modified.");
         memset(event_str, 0, sizeof(event_str));
         if (get_timestamp_and_true(event_str, sizeof(event_str))) {
-            pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] get_timestamp_and_true failed.");
+            pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_modify_manual] get_timestamp_and_true failed.");
         } else {
             if (add_systbl_event(event_str)) {
-                pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] add_systbl_event failed.");
+                pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_modify_manual] add_systbl_event failed.");
             }
         }
     }
@@ -313,8 +354,9 @@ static void trigger_systbl_modify_manual(void)
 static void trigger_clean_event_manual(void)
 {
     int i;
+    unsigned long flags;
 
-    write_lock(&ko_events_list_rwlock);
+    write_lock_irqsave(&ko_events_list_rwlock, flags);
     for (i = 0; i < MAX_EVENTS_COUNT; i++) {
         if (ko_events_list[i] != NULL) {
             kfree(ko_events_list[i]);
@@ -322,9 +364,9 @@ static void trigger_clean_event_manual(void)
         }
     }
     ko_event_count = 0;
-    write_unlock(&ko_events_list_rwlock);
+    write_unlock_irqrestore(&ko_events_list_rwlock, flags);
 
-    write_lock(&systbl_events_list_rwlock);
+    write_lock_irqsave(&systbl_events_list_rwlock, flags);
     for (i = 0; i < MAX_EVENTS_COUNT; i++) {
         if (systbl_events_list[i] != NULL) {
             kfree(systbl_events_list[i]);
@@ -332,7 +374,7 @@ static void trigger_clean_event_manual(void)
         }
     }
     systbl_event_count = 0;
-    write_unlock(&systbl_events_list_rwlock);
+    write_unlock_irqrestore(&systbl_events_list_rwlock, flags);
 }
 /****************************syscallTBL check(end) *************/
 
@@ -348,6 +390,9 @@ static char *next_tag_safe(char *string, unsigned long *secsize)
     while (*secsize > 0 && string[0] == 0) {
         string++;
         (*secsize)--;
+    }
+    if (*secsize == 0) {
+        return NULL;   /* [FIX] 避免返回指向末尾的指针导致死循环 */
     }
     return string;
 }
@@ -368,9 +413,10 @@ static char *get_modinfo_name_safe(const struct load_info *info)
     char *modinfo;
     unsigned long size;
 
-    sechdrs = (void *)hdr + hdr->e_shoff;
-    if (hdr->e_shstrndx >= hdr->e_shnum)
+    if (!hdr || hdr->e_shnum == 0 || hdr->e_shstrndx >= hdr->e_shnum)
         return NULL;
+
+    sechdrs = (void *)hdr + hdr->e_shoff;
     strhdr = &sechdrs[hdr->e_shstrndx];
     secstrings = (void *)hdr + strhdr->sh_offset;
 
@@ -405,21 +451,24 @@ bool check_ko_exist_in_hash_tbl(const char *filename)
 {
     u32 hash_key = jhash(filename, strlen(filename), 0);
     struct hash_tbl_node *entry;
+    bool found = false;
+
     read_lock(&hashtable_lock);
     hash_for_each_possible(inte_hash_table, entry, node, hash_key) {
         if (strcmp(entry->filename, filename) == 0) {
-            read_unlock(&hashtable_lock);
-            return true;
+            found = true;
+            break;
         }
     }
     read_unlock(&hashtable_lock);
-    return false;
+    return found;
 }
 
 bool check_ko_exist_in_hash_tbl_nolock(const char *filename)
 {
     u32 hash_key = jhash(filename, strlen(filename), 0);
     struct hash_tbl_node *entry;
+
     hash_for_each_possible(inte_hash_table, entry, node, hash_key) {
         if (strcmp(entry->filename, filename) == 0) {
             return true;
@@ -428,19 +477,30 @@ bool check_ko_exist_in_hash_tbl_nolock(const char *filename)
     return false;
 }
 
-unsigned char *find_hash_by_name(const char *filename)
+/*
+ * [FIX] 原实现返回 entry 内部指针，解锁后可能 use-after-free。
+ * 改为把 hash 拷贝到调用者缓冲区。
+ * 返回 0 成功，-ENOENT 未找到。
+ */
+int find_hash_by_name(const char *filename, unsigned char *out_hash)
 {
     u32 hash_key = jhash(filename, strlen(filename), 0);
     struct hash_tbl_node *entry;
+    int ret = -ENOENT;
+
+    if (!out_hash)
+        return -EINVAL;
+
     read_lock(&hashtable_lock);
     hash_for_each_possible(inte_hash_table, entry, node, hash_key) {
         if (strcmp(entry->filename, filename) == 0) {
-            read_unlock(&hashtable_lock);
-            return entry->hash;
+            memcpy(out_hash, entry->hash, INTE_HASH_SIZE);
+            ret = 0;
+            break;
         }
     }
     read_unlock(&hashtable_lock);
-    return NULL;
+    return ret;
 }
 /**********************************hash table search(end)*************************************/
 
@@ -458,7 +518,7 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
     unsigned long chunk;
     char *ko_name;
     char ko_name_with_suffix[FILENAME_LEN + 5];
-    unsigned char *init_hash;
+    unsigned char init_hash[INTE_HASH_SIZE];
 
     if (READ_ONCE(boot_stage) != BOOT_COMPLETE) {
         pr_info("[KERNEL_SECURITY_CHECK]: system boot, skip ko hash check.");
@@ -499,7 +559,7 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
         }
         mod += chunk;
         remaining -= chunk;
-        if (unlikely((ktime_get_ns() - start_ns) > 100 * 1000 * 1000)) { // 100ms
+        if (unlikely((ktime_get_ns() - start_ns) > 100ULL * 1000 * 1000)) { // 100ms
             pr_err_ratelimited("[KERNEL_SECURITY_CHECK]: Checking timeout for large module!\n");
             goto out_clean_desc;
         }
@@ -517,8 +577,7 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
     }
     pr_info("[KERNEL_SECURITY_CHECK]: ko_name is [%s].", ko_name);
     scnprintf(ko_name_with_suffix, sizeof(ko_name_with_suffix), "%s.ko", ko_name);
-    init_hash = find_hash_by_name(ko_name_with_suffix);
-    if (init_hash == NULL) {
+    if (find_hash_by_name(ko_name_with_suffix, init_hash) != 0) {
         pr_info("[KERNEL_SECURITY_CHECK]: ko:[%s] hash not found, maybe unknown ko.", ko_name_with_suffix);
         if (add_ko_event(ko_name_with_suffix)) {
             pr_err("[KERNEL_SECURITY_CHECK]: ko events send failed. [%s]\n", ko_name_with_suffix);
@@ -555,7 +614,7 @@ static bool is_valid_sender(void)
     }
     euid = __kuid_val(current->cred->euid);
     if (euid != 1000) {
-        pr_err("[KO_INTEGRITY_VERI):Invalid user, euid : [%u] \n", euid);
+        pr_err("[KO_INTEGRITY_VERI]:Invalid user, euid : [%u] \n", euid);
         return false;
     }
     return true;
@@ -565,7 +624,7 @@ static bool is_system_or_root_sender(void)
 {
     uint32_t euid = __kuid_val(current->cred->euid);
     if (euid != 1000 && euid != 0) {
-        pr_err("[KO_INTEGRITY_VERI):Invalid user, euid : [%u] \n", euid);
+        pr_err("[KO_INTEGRITY_VERI]:Invalid user, euid : [%u] \n", euid);
         return false;
     }
     return true;
@@ -651,7 +710,7 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
             return -EINVAL;
         if (copy_from_user(&ko_event_len, buffer + sizeof(u32), sizeof(int)))
             return -EFAULT;
-        if (ko_event_len <= 0 || ko_event_len > count - sizeof(u32) * 2) {
+        if (ko_event_len <= 0 || (size_t)ko_event_len > count - sizeof(u32) * 2) {
             pr_err("[KERNEL_SECURITY_CHECK]: Invalid event length: %d\n", ko_event_len);
             return -EINVAL;
         }
@@ -672,7 +731,7 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
         pr_err("[KERNEL_SECURITY_CHECK]: Invalid number of entries: %d\n", num_entries);
         return -EINVAL;
     }
-    if (count < sizeof(u32) + num_entries * sizeof(struct hash_entry)) {
+    if (count < sizeof(u32) + (size_t)num_entries * sizeof(struct hash_entry)) {
         pr_err("[KERNEL_SECURITY_CHECK]: Input size too small for entries\n");
         return -EINVAL;
     }
@@ -750,6 +809,7 @@ static ssize_t proc_write_status(struct file *file, const char __user *buffer, s
     }
     if (count < sizeof(int)) {
         pr_err("[KERNEL_SECURITY_CHECK]:Invalid buffer size\n");
+        return -EINVAL;      /* [FIX] 原来继续执行，可能越界读 */
     }
     if (copy_from_user(&status, buffer, sizeof(int))) {
         pr_err("[KERNEL_SECURITY_CHECK]:Failed to copy status.\n");
@@ -788,6 +848,26 @@ static const struct file_operations proc_fops_status = {
 };
 /********************** file_operations(end) **************************/
 
+/*
+ * [FIX] 通过 kallsyms_lookup_name 动态解析 sys_call_table，
+ * 避免链接期 undefined symbol。
+ * 注意：5.7+ 内核默认不导出 kallsyms_lookup_name，需先通过 kprobe 获取其地址。
+ * 4.19 上 kallsyms_lookup_name 是 EXPORT_SYMBOL 的，可以直接调用。
+ */
+static int resolve_sys_call_table(void)
+{
+    unsigned long addr;
+
+    addr = kallsyms_lookup_name("sys_call_table");
+    if (!addr) {
+        pr_err("[KERNEL_SECURITY_CHECK]: Cannot find sys_call_table\n");
+        return -ENOENT;
+    }
+    g_sys_call_table = (unsigned long *)addr;
+    pr_info("[KERNEL_SECURITY_CHECK]: sys_call_table @ 0x%lx\n", addr);
+    return 0;
+}
+
 static int __init __nocfi ko_integrity_init(void)
 {
     int ret = 0;
@@ -821,27 +901,29 @@ static int __init __nocfi ko_integrity_init(void)
 
     pr_info("[KERNEL_SECURITY_CHECK]: create /proc/inte_* succeed \n");
 
+    /* [FIX] kprobe 目标函数名兼容：4.19 为 load_module */
     hash_probe.kp.symbol_name = "load_module";
     ret = register_kretprobe(&hash_probe);
     if (ret < 0) {
-        pr_err("[KERNEL_SECURITY_CHECK]: hash_probe register failed ! \n ");
+        pr_err("[KERNEL_SECURITY_CHECK]: hash_probe register failed ! ret=%d\n", ret);
         goto proc_failed;
-    }
-
-    if (!sys_call_table) {
-        pr_err("[KERNEL_SECURITY_CHECK]: Failed to access sys_call_table\n");
-        ret = -ENOENT;
-        goto init_failed;
     }
 
     g_sha256_tfm = crypto_alloc_shash("sha256", 0, 0);
     if (IS_ERR(g_sha256_tfm)) {
         pr_err("[KERNEL_SECURITY_CHECK]: Failed to allocate sha256 tfm.\n");
         ret = PTR_ERR(g_sha256_tfm);
+        g_sha256_tfm = NULL;
         goto init_failed;
     }
 
-    memcpy(syscall_func_addr, sys_call_table, sizeof(syscall_func_addr));
+    /* [FIX] 动态解析 sys_call_table */
+    ret = resolve_sys_call_table();
+    if (ret) {
+        goto init_failed;
+    }
+
+    memcpy(syscall_func_addr, g_sys_call_table, sizeof(syscall_func_addr));
     ret = do_hash(syscall_func_addr, sizeof(syscall_func_addr), hash_systbl_init);
     if (ret == 0) {
         pr_info("[KERNEL_SECURITY_CHECK]: init hash for syscall_tbl succeed.");
@@ -853,7 +935,7 @@ static int __init __nocfi ko_integrity_init(void)
     INIT_DELAYED_WORK(&check_work, check_task);
     schedule_delayed_work(&check_work, check_interval);
     hash_init(inte_hash_table);
-    pr_info("[KERNEL_SECURITY_CHECK]:init success! , version :0.16\n");
+    pr_info("[KERNEL_SECURITY_CHECK]:init success! , version :0.17\n");
     return ret;
 
 init_failed:
@@ -863,9 +945,9 @@ init_failed:
     }
     unregister_kretprobe(&hash_probe);
 proc_failed:
-    if (proc_ko_entry) remove_proc_entry("inte_ko", NULL);
-    if (proc_systbl_entry) remove_proc_entry("inte_systbl", NULL);
-    if (proc_status_entry) remove_proc_entry("inte_status", NULL);
+    if (proc_ko_entry) { remove_proc_entry("inte_ko", NULL); proc_ko_entry = NULL; }
+    if (proc_systbl_entry) { remove_proc_entry("inte_systbl", NULL); proc_systbl_entry = NULL; }
+    if (proc_status_entry) { remove_proc_entry("inte_status", NULL); proc_status_entry = NULL; }
     return ret;
 }
 
@@ -874,17 +956,23 @@ static void __exit ko_integrity_exit(void)
     int i;
     struct hash_tbl_node *entry;
     struct hlist_node *tmp;
+
     cancel_delayed_work_sync(&check_work);
     unregister_kretprobe(&hash_probe);
-    if (g_sha256_tfm) {
+
+    if (g_sha256_tfm && !IS_ERR(g_sha256_tfm)) {
         crypto_free_shash(g_sha256_tfm);
+        g_sha256_tfm = NULL;
     }
+
     write_lock(&hashtable_lock);
     hash_for_each_safe(inte_hash_table, i, tmp, entry, node) {
         hash_del(&entry->node);
         kfree(entry);
+        total_entry_count--;
     }
     write_unlock(&hashtable_lock);
+
     trigger_clean_event_manual();
 
     if (proc_ko_entry) remove_proc_entry("inte_ko", NULL);
@@ -896,3 +984,5 @@ static void __exit ko_integrity_exit(void)
 module_init(ko_integrity_init);
 module_exit(ko_integrity_exit);
 MODULE_LICENSE("GPL");
+MODULE_AUTHOR("cenjun");
+MODULE_DESCRIPTION("Kernel integrity check: syscall table & ko hash");
