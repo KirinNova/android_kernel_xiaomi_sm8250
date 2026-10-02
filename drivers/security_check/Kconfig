@@ -1,5 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Kernel security and integrity check configuration
+#
+
 config KERNEL_SECURITY_CHECK
-	bool "Kernel security and integrity check support"
-	default y
+	tristate "Kernel security and integrity check support"
+	default m
 	help
 	  Say Y here to enable kernel system call table and KO integrity checks.
+	  This module detects syscall table hijacking and verifies KO module
+	  integrity via SHA256 hash comparison.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called kernel_security_check.
