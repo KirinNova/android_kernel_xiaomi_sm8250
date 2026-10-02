@@ -250,12 +250,13 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "[*] Downloading and running KernelSU remote setup script..."
     curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/fix-execve/kernel/setup.sh" | bash -s fix-execve
 
-    # 自动应用 sucompat.c 编译修复 (针对 Linux 4.19 的解引用适配)
     SUCOMPAT_FILE="drivers/kernelsu/feature/sucompat.c"
     if [ -f "$SUCOMPAT_FILE" ]; then
         echo "[*] Applying sucompat.c compatibility patch for Linux 4.19..."
-        sed -i 's/\(\*filename\)\.name/(*filename)->name/g' "$SUCOMPAT_FILE" || true
-        sed -i 's/\(\*filename\)->name/(*filename).name/g' "$SUCOMPAT_FILE" || true
+        sed -i 's/\(\*filename\)\->name/filename->name/g' "$SUCOMPAT_FILE" || true
+        sed -i 's/\(\*filename\)\.name/filename->name/g' "$SUCOMPAT_FILE" || true
+        sed -i 's/IS_ERR(\*filename)/IS_ERR(filename)/g' "$SUCOMPAT_FILE" || true
+        sed -i 's/(\*filename)\s*==\s*NULL/filename == NULL/g' "$SUCOMPAT_FILE" || true
         echo "[+] sucompat.c patch applied successfully."
     fi
 
