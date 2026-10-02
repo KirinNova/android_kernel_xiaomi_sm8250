@@ -241,7 +241,7 @@ configure_droidspaces_non_gki() {
 }
 
 # ==========================================
-# KernelSU Setup & Automatic Compatibility Fixes
+# KernelSU Setup & Automated sucompat.c Fix
 # ==========================================
 if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "==========================================="
@@ -250,13 +250,11 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "[*] Downloading and running KernelSU remote setup script..."
     curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/fix-execve/kernel/setup.sh" | bash -s fix-execve
 
-    # 自动修复 KernelSU 4.19 sucompat.c 编译报错
     SUCOMPAT_FILE="drivers/kernelsu/feature/sucompat.c"
     if [ -f "$SUCOMPAT_FILE" ]; then
-        echo "[*] Applying compatibility fix for sucompat.c..."
-        # 兼容处理 -> 变更为 . 或直接解引用（视具体源码特征调整）
-        sed -i 's/(\*filename)->name/(*filename).name/g' "$SUCOMPAT_FILE" || true
-        echo "[+] sucompat.c compatibility patch applied."
+        echo "[*] Applying sucompat.c compatibility patch for Linux 4.19..."
+        sed -i 's/\(\*filename\)\.name/(*filename)->name/g' "$SUCOMPAT_FILE" || true
+        echo "[+] sucompat.c patch applied successfully."
     fi
 
     echo "[+] KernelSU setup finished."
