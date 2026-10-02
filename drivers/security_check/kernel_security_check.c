@@ -2,7 +2,7 @@
 * File: kernel_security_check.c
 * Author: cenjun
 * Data: 2025-7-20
-* Version 1.1 (Fixed C89/C99 declaration and loop errors for Linux 4.19)
+* Version 1.2 (Adapted for In-tree Built-in on Linux 4.19 SM8250)
 * Desc: 和平精英需求-内核完整性检测，包括系统调用表劫持检测和ko完整性检测
 ******************************************************************/
 
@@ -23,6 +23,7 @@
 #include <linux/hashtable.h>
 #include <linux/jhash.h>
 #include <linux/rwlock.h>
+#include <asm/unistd.h>
 
 /***************** config ************************************/
 #define SHA256_DIGEST_SIZE 32
@@ -59,7 +60,6 @@ static rwlock_t hashtable_lock;
 static rwlock_t ko_events_list_rwlock;
 static rwlock_t systbl_events_list_rwlock;
 
-typedef long (*ksym_lookup_name)(const char *name);
 static unsigned long syscall_func_addr[__NR_syscalls] = {0};
 
 #if CHECK_DEBUG
@@ -67,7 +67,15 @@ static unsigned long trigger_syscall_func_addr[__NR_syscalls] = {0};
 #endif
 
 uint8_t hash_syscall_table[SHA256_DIGEST_SIZE] = {0};
-unsigned long *sys_call_table = NULL;
+
+/* 声明外部全局符号，避免静态编译时与 arch/arm64/kernel/sys.c 发生符号重定义冲突 */
+#if defined(CONFIG_ARM64)
+typedef long (*syscall_fn_t)(const struct pt_regs *);
+extern const syscall_fn_t sys_call_table[];
+#else
+extern unsigned long *sys_call_table;
+#endif
+
 static struct delayed_work check_work;
 static unsigned long check_interval = 60 * 60 * HZ;
 
@@ -231,7 +239,7 @@ static void check_task(struct work_struct *work)
         return;
     }
     memset(hash_syscall_table, 0xFF, sizeof(hash_syscall_table));
-    ret = do_hash(sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
+    ret = do_hash((unsigned long *)sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
     if (ret != 0) {
         pr_err("[KERNEL_SECURITY_CHECK]:do hash for syscall_tbl failed.");
         goto reschedule;
@@ -259,7 +267,7 @@ static void trigger_systbl_check_manual(void)
     char event_str[64];
 
     memset(hash_syscall_table, 0xFF, sizeof(hash_syscall_table));
-    ret = do_hash(sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
+    ret = do_hash((unsigned long *)sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
     if (ret != 0) {
         pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] do hash for syscall_tbl failed.");
     }
@@ -783,10 +791,6 @@ static const struct file_operations proc_fops_status = {
 static int __init __nocfi ko_integrity_init(void)
 {
     int ret = 0;
-    ksym_lookup_name look_func = NULL;
-    struct kprobe getname_kp = {
-        .symbol_name = "kallsyms_lookup_name",
-    };
 
     rwlock_init(&hashtable_lock);
     rwlock_init(&ko_events_list_rwlock);
@@ -824,17 +828,8 @@ static int __init __nocfi ko_integrity_init(void)
         goto proc_failed;
     }
 
-    ret = register_kprobe(&getname_kp);
-    if (ret < 0) {
-        pr_err("[KERNEL_SECURITY_CHECK]: find [kallsyms_lookup_name] address failed ! \n ");
-        goto init_failed;
-    }
-    look_func = (ksym_lookup_name)getname_kp.addr;
-    unregister_kprobe(&getname_kp);
-
-    sys_call_table = (unsigned long *)look_func("sys_call_table");
     if (!sys_call_table) {
-        pr_err("[KERNEL_SECURITY_CHECK]: Failed to find sys_call_table\n");
+        pr_err("[KERNEL_SECURITY_CHECK]: Failed to access sys_call_table\n");
         ret = -ENOENT;
         goto init_failed;
     }
