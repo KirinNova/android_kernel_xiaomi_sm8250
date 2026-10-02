@@ -3774,12 +3774,12 @@ static int unknown_module_param_cb(char *param, char *val, const char *modname,
 
 /* Allocate and load the module: note that size of section 0 is always
    zero, and we rely on this for optional sections. */
-static int load_module(struct load_info *info, const char __user *uargs,
-		       int flags)
+int noinline load_module(struct load_info *info, const char __user *uargs,
+           int flags)
 {
-	struct module *mod;
-	long err = 0;
-	char *after_dashes;
+    struct module *mod;
+    long err = 0;
+    char *after_dashes;
 
 	err = elf_header_check(info);
 	if (err)
@@ -4540,11 +4540,13 @@ void print_modules(void)
 /* Generate the signature for all relevant module structures here.
  * If these change, we don't want to try to parse the module. */
 void module_layout(struct module *mod,
-		   struct modversion_info *ver,
-		   struct kernel_param *kp,
-		   struct kernel_symbol *ks,
-		   struct tracepoint * const *tp)
+            struct modversion_info *ver,
+            struct kernel_param *kp,
+            struct kernel_symbol *ks,
+            struct tracepoint * const *tp)
 {
 }
 EXPORT_SYMBOL(module_layout);
 #endif
+
+EXPORT_SYMBOL_GPL(load_module);
