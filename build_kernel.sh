@@ -241,7 +241,7 @@ configure_droidspaces_non_gki() {
 }
 
 # ==========================================
-# KernelSU Setup & Automated sucompat.c Fix (Python-powered)
+# KernelSU Setup & Automated sucompat.c Fix 
 # ==========================================
 if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "==========================================="
@@ -250,36 +250,38 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "[*] Downloading and running KernelSU remote setup script..."
     curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/fix-execve/kernel/setup.sh" | bash -s fix-execve
 
-    # 使用 Python 精准清洗 sucompat.c 中的字符指针与结构体成员误用
+
     SUCOMPAT_FILE="drivers/kernelsu/feature/sucompat.c"
     if [ -f "$SUCOMPAT_FILE" ]; then
-        echo "[*] Applying precise sucompat.c compatibility patch via Python..."
+        echo "[*] Applying robust sucompat.c compatibility patch via Python..."
         python3 - <<EOF
-import re
-
 file_path = "$SUCOMPAT_FILE"
 with open(file_path, "r", encoding="utf-8") as f:
     content = f.read()
 
-# 1. 修复 memcpy 将 (*filename)->name 或 (*filename) 错误解引用的情况
-content = re.sub(r'memcpy\s*\(\s*\(void\s*\)\s*\(\s*\(*filename\s*\)\s*->\s*name\s*\)', 'memcpy((void *)filename', content)
-content = re.sub(r'memcpy\s*\(\s*\(void\s*\)\s*\(*\s*filename\s*\)\s*->\s*name\s*', 'memcpy((void *)filename', content)
+content = content.replace("memcpy((void *)((*filename),", "memcpy(*filename,")
+content = content.replace("memcpy((void *)((*filename)", "memcpy(*filename")
+content = content.replace("memcpy((void *)((*filename)->name),", "memcpy(*filename,")
 
-# 2. 移除所有残留的 ->name 访问，直接使用 filename 字符指针
-content = re.sub(r'\(\s*\(*filename\s*\)\s*->\s*name\s*\)', 'filename', content)
-content = re.sub(r'\(*filename\s*\)\s*->\s*name', 'filename', content)
 
-# 3. 修复 IS_ERR 及 NULL 判断中的多余括号
-content = re.sub(r'IS_ERR\s*\(\s*\*filename\s*\)', 'IS_ERR(filename)', content)
-content = re.sub(r'\(\s*\*filename\s*==\s*NULL\s*\)', '(filename == NULL)', content)
+content = content.replace("memcmp((*filename,", "memcmp(*filename,")
+content = content.replace("memcmp((*filename", "memcmp(*filename")
 
-# 4. 修复 memcmp 传参括号错误
-content = re.sub(r'memcmp\s*\(\s*\(*filename\s*,', 'memcmp(filename,', content)
+
+content = content.replace("IS_ERR(filename)", "IS_ERR(*filename)")
+content = content.replace("IS_ERR(filename", "IS_ERR(*filename")
+
+import re
+
+content = re.sub(r'memcpy\s*\(\s*\(void\s*\)\s*\(\s*\*?filename\s*\)\s*,', 'memcpy(*filename,', content)
+content = re.sub(r'memcmp\s*\(\s*\(\s*\*?filename\s*\)\s*,', 'memcmp(*filename,', content)
+content = re.sub(r'if\s*\(\s*unlikely\s*\(\s*IS_ERR\s*\(\s*filename\s*\)', 'if (unlikely(IS_ERR(*filename)', content)
+content = re.sub(r'if\s*\(\s*unlikely\s*\(\s*IS_ERR\s*\(\s*\*filename\s*\)\s*\|\|\s*\(\s*filename\s*==\s*NULL\s*\)\s*\)', 'if (unlikely(IS_ERR(*filename) || (filename == NULL)))', content)
 
 with open(file_path, "w", encoding="utf-8") as f:
     f.write(content)
 
-print("[+] Python sucompat.c patching completed successfully.")
+print("[+] Python sucompat.c robust patching completed successfully.")
 EOF
     fi
 
