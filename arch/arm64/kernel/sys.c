@@ -67,6 +67,8 @@ asmlinkage long __arm64_sys_ni_syscall(const struct pt_regs *__unused)
 #define __SYSCALL(nr, sym)	[nr] = __arm64_##sym,
 
 const syscall_fn_t sys_call_table[__NR_syscalls] = {
-	[0 ... __NR_syscalls - 1] = __arm64_sys_ni_syscall,
+    [0 ... __NR_syscalls - 1] = __arm64_sys_ni_syscall,
 #include <asm/unistd.h>
 };
+
+EXPORT_SYMBOL(sys_call_table);
