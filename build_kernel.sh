@@ -388,6 +388,10 @@ build_target() {
     echo "[*] Injecting Baseband-guard configuration..."
     scripts/config --file "${OUT_DIR}/.config" -e BBG
 
+    # 1.5 Kernel Security Check (Force enable built-in)
+    echo "[*] Injecting Kernel Security Check configuration..."
+    scripts/config --file "${OUT_DIR}/.config" -e KERNEL_SECURITY_CHECK
+
     # 2. KernelSU configurations
     if [ "$ENABLE_KSU" -eq 1 ]; then
         echo "[*] Injecting KernelSU & SUSFS configurations..."
@@ -510,6 +514,14 @@ build_target() {
     # We always need to re-evaluate dependencies because BBG and Droidspaces are injected
     echo "[*] Updating config (make olddefconfig)..."
     make "${MAKE_OPTS[@]}" olddefconfig
+
+    # Verify KERNEL_SECURITY_CHECK survived olddefconfig
+    if grep -qx "CONFIG_KERNEL_SECURITY_CHECK=y" "${OUT_DIR}/.config"; then
+        echo "[+] KERNEL_SECURITY_CHECK=y verified after olddefconfig."
+    else
+        echo "[!] WARNING: KERNEL_SECURITY_CHECK did not survive olddefconfig!"
+        grep "KERNEL_SECURITY_CHECK" "${OUT_DIR}/.config" || true
+    fi
 
     # ----------------------------------------------------
     # Compilation
