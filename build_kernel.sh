@@ -241,7 +241,7 @@ configure_droidspaces_non_gki() {
 }
 
 # ==========================================
-# KernelSU Setup & Automated sucompat.c Fix
+# KernelSU Setup & Automated sucompat.c Fix 
 # ==========================================
 if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "==========================================="
@@ -252,12 +252,23 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
 
     SUCOMPAT_FILE="drivers/kernelsu/feature/sucompat.c"
     if [ -f "$SUCOMPAT_FILE" ]; then
-        echo "[*] Applying sucompat.c compatibility patch for Linux 4.19..."
-        sed -i 's/\(\*filename\)\->name/filename->name/g' "$SUCOMPAT_FILE" || true
-        sed -i 's/\(\*filename\)\.name/filename->name/g' "$SUCOMPAT_FILE" || true
-        sed -i 's/IS_ERR(\*filename)/IS_ERR(filename)/g' "$SUCOMPAT_FILE" || true
-        sed -i 's/(\*filename)\s*==\s*NULL/filename == NULL/g' "$SUCOMPAT_FILE" || true
-        echo "[+] sucompat.c patch applied successfully."
+        echo "[*] Applying robust sucompat.c compatibility patch via Python..."
+        python3 - <<EOF
+import re
+
+file_path = "$SUCOMPAT_FILE"
+with open(file_path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+content = re.sub(r'\(?\s*\(*filename\s*\)\s*->\s*name', 'filename', content)
+content = re.sub(r'IS_ERR\s*\(\s*\(*filename\s*\)\s*\)', 'IS_ERR(filename)', content)
+content = re.sub(r'\(\s*\(*filename\s*\)\s*==\s*NULL\)', '(filename == NULL)', content)
+
+with open(file_path, "w", encoding="utf-8") as f:
+    f.write(content)
+
+print("[+] Python sucompat.c patching completed.")
+EOF
     fi
 
     echo "[+] KernelSU setup finished."
