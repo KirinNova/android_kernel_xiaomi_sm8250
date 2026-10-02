@@ -2,7 +2,7 @@
 * File: kernel_security_check.c
 * Author: cenjun
 * Data: 2025-7-20
-* Version 1.5 (Fixed for Linux 4.19 ARM64, K40 alioth)
+* Version 1.6 (Fixed for Linux 4.19 ARM64 + CFI/LTO + CC_WERROR)
 * Desc: 内核完整性检测，包括系统调用表劫持检测和ko完整性检测
 ******************************************************************/
 
@@ -38,8 +38,13 @@
 #define KO_EVENT_FLAG 10000
 #define BOOT_COMPLETE 1
 
-/* 强制打开调试触发接口（4.19 上不容易同时开 3 个 DEBUG config） */
+/* 4.19 上不容易同时开 3 个 DEBUG config，强制打开调试触发接口 */
 #define CHECK_DEBUG 1
+
+/* CFI 兼容：4.19 部分内核未定义 __nocfi */
+#ifndef __nocfi
+#define __nocfi
+#endif
 
 struct hash_entry {
     char filename[FILENAME_LEN];
@@ -74,7 +79,6 @@ static unsigned long trigger_syscall_func_addr[SYS_CALL_TBL_SIZE] = {0};
 
 uint8_t hash_syscall_table[SHA256_DIGEST_SIZE] = {0};
 
-/* sys_call_table 通过 kallsyms 动态解析 */
 static unsigned long *g_sys_call_table = NULL;
 
 static struct delayed_work check_work;
@@ -94,9 +98,6 @@ static int boot_stage = 0;
 static struct crypto_shash *g_sha256_tfm = NULL;
 /***********************config(end)******************************/
 
-/*
- * Elf_Ehdr / Elf_Shdr 在内核中实际叫 struct elfhdr / struct elf_shdr
- */
 #ifndef Elf_Ehdr
 typedef struct elfhdr Elf_Ehdr;
 #endif
@@ -844,7 +845,10 @@ static int resolve_sys_call_table(void)
     return 0;
 }
 
-static int __init ko_integrity_init(void)
+/*
+ * [CFI] __init 加 __nocfi，避免 CFI 检查拦截 kretprobe 注册
+ */
+static int __init __nocfi ko_integrity_init(void)
 {
     int ret = 0;
 
