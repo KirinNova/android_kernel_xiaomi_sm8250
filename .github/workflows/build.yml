@@ -133,6 +133,22 @@ jobs:
           echo "Executing command: ./build_kernel.sh $ARGS"
           ./build_kernel.sh $ARGS
 
+      - name: Verify KERNEL_SECURITY_CHECK in generated .config
+        if: always()
+        run: |
+          echo "=== Checking KERNEL_SECURITY_CHECK in out_*/.config ==="
+          for cfg in out_*/.config; do
+            if [ -f "$cfg" ]; then
+              echo "--- $cfg ---"
+              grep -n "KERNEL_SECURITY_CHECK" "$cfg" || echo "(not found!)"
+            fi
+          done
+          echo "=== Checking kernel_security_check objects ==="
+          find out_* -name "kernel_security_check.o" 2>/dev/null || true
+          find out_* -name "kernel_security_check.ko" 2>/dev/null || true
+          echo "=== Checking built-in.a ==="
+          find out_* -path "*security_check*" -name "built-in.a" 2>/dev/null || true
+
       - name: Print Post-Build Ccache Stats
         if: always()
         run: |
