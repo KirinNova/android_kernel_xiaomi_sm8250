@@ -196,11 +196,22 @@ static int __nf_queue(struct sk_buff *skb, const struct nf_hook_state *state,
 
 	*entry = (struct nf_queue_entry) {
 		.skb	= skb,
-		.skb_dev = skb->dev,
 		.state	= *state,
 		.hook_index = index,
 		.size	= sizeof(*entry) + route_key_size,
 	};
+#if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)
+	/* skb->dev is only guaranteed to be a net_device for bridge traffic.
+	 * For locally generated packets it aliases skb->rbnode.rb_left (the
+	 * TCP retransmit queue is an rbtree), and dev_hold() on it would
+	 * corrupt the tree node's reference count. Record it only when the
+	 * skb carries bridge metadata, which is the only case where the
+	 * "hold bridge skb->dev while queued" logic from commit e196115ec330
+	 * is actually needed.
+	 */
+	if (skb->nf_bridge)
+		entry->skb_dev = skb->dev;
+#endif
 
 	if (!nf_queue_entry_get_refs(entry)) {
 		kfree(entry);
