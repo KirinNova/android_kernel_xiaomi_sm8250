@@ -115,6 +115,16 @@ jobs:
           echo 'echo ""' >> scripts/setlocalversion
           chmod +x scripts/setlocalversion
 
+      - name: Build Companion Module
+        run: |
+          if [ -f "./bk_build/build-module.sh" ]; then
+            echo "[*] Executing bk_build/build-module.sh..."
+            chmod +x ./bk_build/build-module.sh
+            ./bk_build/build-module.sh
+          else
+            echo "[!] Notice: bk_build/build-module.sh not found, skipping."
+          fi
+
       - name: Run Build Script
         run: |
           chmod +x build_kernel.sh
@@ -155,18 +165,18 @@ jobs:
           echo "=== Post-Build Ccache Stats ==="
           ccache -s
 
-      - name: Upload Flashable ZIP (Artifact)
+      - name: Upload Flashable ZIP & Modules (Artifact)
         uses: actions/upload-artifact@v4
         with:
           name: DEBUG_APTKernel-${{ github.event.inputs.device || 'alioth' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_id }}
-          path: "*APTKernel_*.zip"
+          path: "*.zip"
           compression-level: 0
 
       - name: Publish Release
         if: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event.inputs.release != 'false' }}
         uses: softprops/action-gh-release@v2
         with:
-          files: "*APTKernel_*.zip"
+          files: "*.zip"
           tag_name: kernel-${{ github.event.inputs.device || 'alioth' }}-${{ github.run_id }}
           name: "Kernel Build for ${{ github.event.inputs.device || 'alioth' }} (${{ github.event.inputs.target_os || 'miui' }})"
           body: |
