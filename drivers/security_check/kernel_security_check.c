@@ -2,7 +2,7 @@
 * File: kernel_security_check.c
 * Author: cenjun
 * Data: 2025-7-20
-* Version 2.2 (Fix CFI initcall + irqsave locks + length checks)
+* Version 2.4 (Fix CFI initcall: module_init fn directly __nocfi)
 * Desc: 内核完整性检测，包括系统调用表劫持检测和ko完整性检测
 ******************************************************************/
 
@@ -874,20 +874,20 @@ static int resolve_sys_call_table(void)
 
 /*
  * ============================================================
- * [FIX v2.2] 两层 initcall:
- *   外层 ko_integrity_init -> 普通 __init，CFI 通过
- *   内层 ko_integrity_init_impl -> __nocfi，函数体内间接调用不受 CFI 限制
+ * [FIX v2.4] module_init 注册的函数**直接**带 __nocfi
+ *
+ * 之前 v2.2 用"外层普通 + 内层 __nocfi"的写法：
+ *   module_init(ko_integrity_init)  // 外层普通
+ *   ko_integrity_init() { return ko_integrity_init_impl(); }
+ *
+ * CFI 在 initcall 间接调用时会检查外层函数的 CFI hash。
+ * 如果外层没有 __nocfi，且 Clang 生成的 CFI hash 与内核不一致，
+ * 整个 initcall 会被静默跳过，导致 /proc/inte_* 不出现。
+ *
+ * 正确做法：module_init 注册的函数直接带 __nocfi。
  * ============================================================
  */
-static int __init __nocfi ko_integrity_init_impl(void);
-
-static int __init ko_integrity_init(void)
-{
-    return ko_integrity_init_impl();
-}
-module_init(ko_integrity_init);
-
-static int __init __nocfi ko_integrity_init_impl(void)
+static int __init __nocfi ko_integrity_init(void)
 {
     int ret = 0;
 
@@ -963,7 +963,7 @@ static int __init __nocfi ko_integrity_init_impl(void)
     INIT_DELAYED_WORK(&check_work, check_task);
     schedule_delayed_work(&check_work, check_interval);
     hash_init(inte_hash_table);
-    pr_emerg("KSC>>> 12. INIT SUCCESS! version 2.2\n");
+    pr_emerg("KSC>>> 12. INIT SUCCESS! version 2.4\n");
     return 0;
 
 init_failed:
@@ -1011,6 +1011,7 @@ static void __exit ko_integrity_exit(void)
     pr_emerg("[KERNEL_SECURITY_CHECK]: exit success!");
 }
 
+module_init(ko_integrity_init);
 module_exit(ko_integrity_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("cenjun");
