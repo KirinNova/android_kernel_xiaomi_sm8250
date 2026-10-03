@@ -2,7 +2,7 @@
 * File: kernel_security_check.c
 * Author: cenjun
 * Data: 2025-7-20
-* Version 2.0 (Fix CFI initcall + pr_emerg tracing)
+* Version 2.1 (Fix CFI initcall + pr_emerg tracing)
 * Desc: 内核完整性检测，包括系统调用表劫持检测和ko完整性检测
 ******************************************************************/
 
@@ -45,6 +45,10 @@ extern unsigned long *sys_call_table;
 #define BOOT_COMPLETE 1
 
 #define CHECK_DEBUG 1
+
+#ifndef __nocfi
+#define __nocfi
+#endif
 
 struct hash_entry {
     char filename[FILENAME_LEN];
@@ -123,7 +127,7 @@ struct load_info {
     } index;
 };
 
-/* ============ 保留原有的 add_ko_event / add_systbl_event / do_hash 等函数 ============ */
+/* ============ 原有函数，保持不变 ============ */
 
 int add_ko_event(const char *event_str)
 {
@@ -839,13 +843,20 @@ static int resolve_sys_call_table(void)
 
 /*
  * ============================================================
- * [FIX v2.0] 去掉 __nocfi，用普通 __init，避免 initcall 段项
- *             与 CFI hash 不匹配导致 init 被跳过
- *
- *             所有 pr_err -> pr_emerg，确保不被日志系统吞
+ * [FIX v2.1] 拆两层：
+ *   外层 ko_integrity_init  -> 普通 __init，CFI 通过
+ *   内层 ko_integrity_init_impl -> __nocfi，函数体内间接调用不受 CFI 限制
  * ============================================================
  */
+static int __init __nocfi ko_integrity_init_impl(void);
+
 static int __init ko_integrity_init(void)
+{
+    return ko_integrity_init_impl();
+}
+module_init(ko_integrity_init);
+
+static int __init __nocfi ko_integrity_init_impl(void)
 {
     int ret = 0;
 
@@ -921,7 +932,7 @@ static int __init ko_integrity_init(void)
     INIT_DELAYED_WORK(&check_work, check_task);
     schedule_delayed_work(&check_work, check_interval);
     hash_init(inte_hash_table);
-    pr_emerg("KSC>>> 12. INIT SUCCESS! version 2.0\n");
+    pr_emerg("KSC>>> 12. INIT SUCCESS! version 2.1\n");
     return 0;
 
 init_failed:
@@ -969,7 +980,6 @@ static void __exit ko_integrity_exit(void)
     pr_emerg("[KERNEL_SECURITY_CHECK]: exit success!");
 }
 
-module_init(ko_integrity_init);
 module_exit(ko_integrity_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("cenjun");
