@@ -2,7 +2,7 @@
 * File: kernel_security_check.c
 * Author: cenjun
 * Data: 2025-7-20
-* Version 1.8 (Debug pr_err + init call trace)
+* Version 2.0 (Fix CFI initcall + pr_emerg tracing)
 * Desc: 内核完整性检测，包括系统调用表劫持检测和ko完整性检测
 ******************************************************************/
 
@@ -45,10 +45,6 @@ extern unsigned long *sys_call_table;
 #define BOOT_COMPLETE 1
 
 #define CHECK_DEBUG 1
-
-#ifndef __nocfi
-#define __nocfi
-#endif
 
 struct hash_entry {
     char filename[FILENAME_LEN];
@@ -127,8 +123,7 @@ struct load_info {
     } index;
 };
 
-/* =========== 以下是 add_ko_event 等未改动的函数 =========== */
-/* 从你贴的原始代码直接复制，唯一区别是 init 函数被替换 */
+/* ============ 保留原有的 add_ko_event / add_systbl_event / do_hash 等函数 ============ */
 
 int add_ko_event(const char *event_str)
 {
@@ -835,106 +830,109 @@ static int resolve_sys_call_table(void)
     g_sys_call_table = sys_call_table;
 #endif
     if (!g_sys_call_table) {
-        pr_err("KSC>>> FAIL: sys_call_table is NULL\n");
+        pr_emerg("KSC>>> FAIL: sys_call_table is NULL\n");
         return -ENOENT;
     }
-    pr_err("KSC>>> sys_call_table @ 0x%lx\n", (unsigned long)g_sys_call_table);
+    pr_emerg("KSC>>> sys_call_table @ 0x%lx\n", (unsigned long)g_sys_call_table);
     return 0;
 }
 
 /*
  * ============================================================
- * [DEBUG] init 全用 pr_err，每步打点
+ * [FIX v2.0] 去掉 __nocfi，用普通 __init，避免 initcall 段项
+ *             与 CFI hash 不匹配导致 init 被跳过
+ *
+ *             所有 pr_err -> pr_emerg，确保不被日志系统吞
  * ============================================================
  */
-static int __init __nocfi ko_integrity_init(void)
+static int __init ko_integrity_init(void)
 {
     int ret = 0;
 
-    pr_err("KSC>>> >>> >>> INIT ENTERED <<< <<< <<<\n");
+    pr_emerg("KSC>>> >>> >>> INIT ENTERED <<< <<< <<<\n");
 
     rwlock_init(&hashtable_lock);
     rwlock_init(&ko_events_list_rwlock);
     rwlock_init(&systbl_events_list_rwlock);
-    pr_err("KSC>>> 1. rwlock init done\n");
+    pr_emerg("KSC>>> 1. rwlock init done\n");
 
     proc_ko_entry = proc_create("inte_ko", 0664, NULL, &proc_fops_ko);
     if (!proc_ko_entry) {
-        pr_err("KSC>>> FAIL: proc_create inte_ko\n");
+        pr_emerg("KSC>>> FAIL: proc_create inte_ko\n");
         return -ENOMEM;
     }
     proc_set_user(proc_ko_entry, KUIDT_INIT(0), KGIDT_INIT(0));
-    pr_err("KSC>>> 2. /proc/inte_ko OK\n");
+    pr_emerg("KSC>>> 2. /proc/inte_ko OK\n");
 
     proc_systbl_entry = proc_create("inte_systbl", 0664, NULL, &proc_fops_systbl);
     if (!proc_systbl_entry) {
-        pr_err("KSC>>> FAIL: proc_create inte_systbl\n");
+        pr_emerg("KSC>>> FAIL: proc_create inte_systbl\n");
         ret = -ENOMEM;
         goto proc_failed;
     }
     proc_set_user(proc_systbl_entry, KUIDT_INIT(0), KGIDT_INIT(0));
-    pr_err("KSC>>> 3. /proc/inte_systbl OK\n");
+    pr_emerg("KSC>>> 3. /proc/inte_systbl OK\n");
 
     proc_status_entry = proc_create("inte_status", 0660, NULL, &proc_fops_status);
     if (!proc_status_entry) {
-        pr_err("KSC>>> FAIL: proc_create inte_status\n");
+        pr_emerg("KSC>>> FAIL: proc_create inte_status\n");
         ret = -ENOMEM;
         goto proc_failed;
     }
     proc_set_user(proc_status_entry, KUIDT_INIT(0), KGIDT_INIT(0));
-    pr_err("KSC>>> 4. /proc/inte_status OK\n");
+    pr_emerg("KSC>>> 4. /proc/inte_status OK\n");
 
-    pr_err("KSC>>> 5. before register_kretprobe\n");
+    pr_emerg("KSC>>> 5. before register_kretprobe\n");
     hash_probe.kp.symbol_name = "load_module";
     ret = register_kretprobe(&hash_probe);
     if (ret < 0) {
-        pr_err("KSC>>> FAIL: register_kretprobe ret=%d\n", ret);
+        pr_emerg("KSC>>> FAIL: register_kretprobe ret=%d\n", ret);
         goto proc_failed;
     }
-    pr_err("KSC>>> 6. kretprobe registered OK\n");
+    pr_emerg("KSC>>> 6. kretprobe registered OK\n");
 
-    pr_err("KSC>>> 7. before crypto_alloc_shash\n");
+    pr_emerg("KSC>>> 7. before crypto_alloc_shash\n");
     g_sha256_tfm = crypto_alloc_shash("sha256", 0, 0);
     if (IS_ERR(g_sha256_tfm)) {
-        pr_err("KSC>>> FAIL: crypto_alloc_shash ret=%ld\n", PTR_ERR(g_sha256_tfm));
+        pr_emerg("KSC>>> FAIL: crypto_alloc_shash ret=%ld\n", PTR_ERR(g_sha256_tfm));
         ret = PTR_ERR(g_sha256_tfm);
         g_sha256_tfm = NULL;
         goto init_failed;
     }
-    pr_err("KSC>>> 8. sha256 tfm OK\n");
+    pr_emerg("KSC>>> 8. sha256 tfm OK\n");
 
-    pr_err("KSC>>> 9. before resolve_sys_call_table\n");
+    pr_emerg("KSC>>> 9. before resolve_sys_call_table\n");
     ret = resolve_sys_call_table();
     if (ret) {
-        pr_err("KSC>>> FAIL: resolve_sys_call_table ret=%d\n", ret);
+        pr_emerg("KSC>>> FAIL: resolve_sys_call_table ret=%d\n", ret);
         goto init_failed;
     }
-    pr_err("KSC>>> 10. sys_call_table OK\n");
+    pr_emerg("KSC>>> 10. sys_call_table OK\n");
 
     memcpy(syscall_func_addr, g_sys_call_table, sizeof(syscall_func_addr));
     ret = do_hash(syscall_func_addr, sizeof(syscall_func_addr), hash_systbl_init);
     if (ret == 0) {
-        pr_err("KSC>>> 11. init hash for syscall_tbl OK\n");
+        pr_emerg("KSC>>> 11. init hash for syscall_tbl OK\n");
     } else {
-        pr_err("KSC>>> FAIL: do_hash ret=%d\n", ret);
+        pr_emerg("KSC>>> FAIL: do_hash ret=%d\n", ret);
         goto init_failed;
     }
 
     INIT_DELAYED_WORK(&check_work, check_task);
     schedule_delayed_work(&check_work, check_interval);
     hash_init(inte_hash_table);
-    pr_err("KSC>>> 12. INIT SUCCESS! version 0.18\n");
+    pr_emerg("KSC>>> 12. INIT SUCCESS! version 2.0\n");
     return 0;
 
 init_failed:
-    pr_err("KSC>>> init_failed path\n");
+    pr_emerg("KSC>>> init_failed path\n");
     if (g_sha256_tfm && !IS_ERR(g_sha256_tfm)) {
         crypto_free_shash(g_sha256_tfm);
         g_sha256_tfm = NULL;
     }
     unregister_kretprobe(&hash_probe);
 proc_failed:
-    pr_err("KSC>>> proc_failed path\n");
+    pr_emerg("KSC>>> proc_failed path\n");
     if (proc_ko_entry) { remove_proc_entry("inte_ko", NULL); proc_ko_entry = NULL; }
     if (proc_systbl_entry) { remove_proc_entry("inte_systbl", NULL); proc_systbl_entry = NULL; }
     if (proc_status_entry) { remove_proc_entry("inte_status", NULL); proc_status_entry = NULL; }
@@ -968,7 +966,7 @@ static void __exit ko_integrity_exit(void)
     if (proc_ko_entry) remove_proc_entry("inte_ko", NULL);
     if (proc_systbl_entry) remove_proc_entry("inte_systbl", NULL);
     if (proc_status_entry) remove_proc_entry("inte_status", NULL);
-    pr_info("[KERNEL_SECURITY_CHECK]: exit success!");
+    pr_emerg("[KERNEL_SECURITY_CHECK]: exit success!");
 }
 
 module_init(ko_integrity_init);
