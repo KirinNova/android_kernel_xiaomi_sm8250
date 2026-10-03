@@ -2,7 +2,7 @@
 * File: kernel_security_check.c
 * Author: cenjun
 * Data: 2025-7-20
-* Version 2.1 (Fix CFI initcall + pr_emerg tracing)
+* Version 2.2 (Fix CFI initcall + irqsave locks + length checks)
 * Desc: 内核完整性检测，包括系统调用表劫持检测和ko完整性检测
 ******************************************************************/
 
@@ -43,6 +43,7 @@ extern unsigned long *sys_call_table;
 #define MAX_EVENTS_COUNT 10
 #define KO_EVENT_FLAG 10000
 #define BOOT_COMPLETE 1
+#define EVENT_STR_MAX_LEN 256
 
 #define CHECK_DEBUG 1
 
@@ -127,7 +128,7 @@ struct load_info {
     } index;
 };
 
-/* ============ 原有函数，保持不变 ============ */
+/* ============ 事件记录函数 ============ */
 
 int add_ko_event(const char *event_str)
 {
@@ -135,9 +136,15 @@ int add_ko_event(const char *event_str)
     char *event_new_str;
     unsigned long flags;
     int i;
+    size_t len;
 
     if (!event_str) {
         pr_err("[KERNEL_SECURITY_CHECK]: add_ko_event [event_str] is NULL.\n");
+        return -EINVAL;
+    }
+    len = strlen(event_str);
+    if (len == 0 || len > EVENT_STR_MAX_LEN) {
+        pr_err("[KERNEL_SECURITY_CHECK]: add_ko_event invalid len %zu\n", len);
         return -EINVAL;
     }
     event_new_str = kstrdup(event_str, GFP_ATOMIC);
@@ -170,9 +177,15 @@ int add_systbl_event(const char *event_str)
     char *event_new_str;
     unsigned long flags;
     int i;
+    size_t len;
 
     if (!event_str) {
         pr_err("[KERNEL_SECURITY_CHECK]: add_systbl_event [event_str] is NULL.\n");
+        return -EINVAL;
+    }
+    len = strlen(event_str);
+    if (len == 0 || len > EVENT_STR_MAX_LEN) {
+        pr_err("[KERNEL_SECURITY_CHECK]: add_systbl_event invalid len %zu\n", len);
         return -EINVAL;
     }
     event_new_str = kstrdup(event_str, GFP_ATOMIC);
@@ -435,15 +448,16 @@ bool check_ko_exist_in_hash_tbl(const char *filename)
     u32 hash_key = jhash(filename, strlen(filename), 0);
     struct hash_tbl_node *entry;
     bool found = false;
+    unsigned long flags;
 
-    read_lock(&hashtable_lock);
+    read_lock_irqsave(&hashtable_lock, flags);
     hash_for_each_possible(inte_hash_table, entry, node, hash_key) {
         if (strcmp(entry->filename, filename) == 0) {
             found = true;
             break;
         }
     }
-    read_unlock(&hashtable_lock);
+    read_unlock_irqrestore(&hashtable_lock, flags);
     return found;
 }
 
@@ -462,14 +476,17 @@ bool check_ko_exist_in_hash_tbl_nolock(const char *filename)
 
 int find_hash_by_name(const char *filename, unsigned char *out_hash)
 {
-    u32 hash_key = jhash(filename, strlen(filename), 0);
+    u32 hash_key;
     struct hash_tbl_node *entry;
     int ret = -ENOENT;
+    unsigned long flags;
 
-    if (!out_hash)
+    if (!filename || !out_hash)
         return -EINVAL;
 
-    read_lock(&hashtable_lock);
+    hash_key = jhash(filename, strlen(filename), 0);
+
+    read_lock_irqsave(&hashtable_lock, flags);
     hash_for_each_possible(inte_hash_table, entry, node, hash_key) {
         if (strcmp(entry->filename, filename) == 0) {
             memcpy(out_hash, entry->hash, INTE_HASH_SIZE);
@@ -477,7 +494,7 @@ int find_hash_by_name(const char *filename, unsigned char *out_hash)
             break;
         }
     }
-    read_unlock(&hashtable_lock);
+    read_unlock_irqrestore(&hashtable_lock, flags);
     return ret;
 }
 /**********************************hash table search(end)*************************************/
@@ -495,7 +512,7 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
     u64 start_ns;
     unsigned long chunk;
     char *ko_name;
-    char ko_name_with_suffix[FILENAME_LEN + 5];
+    char ko_name_with_suffix[FILENAME_LEN + 8];
     unsigned char init_hash[INTE_HASH_SIZE];
 
     if (READ_ONCE(boot_stage) != BOOT_COMPLETE) {
@@ -551,6 +568,10 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
     ko_name = get_modinfo_name_safe(info);
     if (ko_name == NULL) {
         pr_err("[KERNEL_SECURITY_CHECK]: get ko name failed.\n");
+        goto out_clean_desc;
+    }
+    if (strlen(ko_name) > FILENAME_LEN - 4) {
+        pr_err("[KERNEL_SECURITY_CHECK]: ko_name too long: %s\n", ko_name);
         goto out_clean_desc;
     }
     pr_info("[KERNEL_SECURITY_CHECK]: ko_name is [%s].", ko_name);
@@ -671,6 +692,7 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
     int num_entries;
     u32 key;
     u32 bucket;
+    unsigned long flags;
 
     if (!is_valid_sender()) {
         pr_err("[KERNEL_SECURITY_CHECK]: Invalid sender process\n");
@@ -724,6 +746,15 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
         return -EFAULT;
     }
     for (i = 0; i < num_entries; i++) {
+        normalize_mod_name(input_data[i].filename);
+
+        write_lock_irqsave(&hashtable_lock, flags);
+        if (check_ko_exist_in_hash_tbl_nolock(input_data[i].filename)) {
+            write_unlock_irqrestore(&hashtable_lock, flags);
+            continue;
+        }
+        write_unlock_irqrestore(&hashtable_lock, flags);
+
         entry = kmalloc(sizeof(struct hash_tbl_node), GFP_KERNEL);
         if (!entry) {
             ret = -ENOMEM;
@@ -731,19 +762,19 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
         }
         INIT_HLIST_NODE(&entry->node);
         strscpy(entry->filename, input_data[i].filename, FILENAME_LEN);
-        normalize_mod_name(entry->filename);
         memcpy(entry->hash, input_data[i].hash, INTE_HASH_SIZE);
         key = jhash(entry->filename, strlen(entry->filename), 0);
         bucket = hash_min(key, INTE_HASH_BITS);
-        write_lock(&hashtable_lock);
+
+        write_lock_irqsave(&hashtable_lock, flags);
         if (check_ko_exist_in_hash_tbl_nolock(entry->filename)) {
-            write_unlock(&hashtable_lock);
+            write_unlock_irqrestore(&hashtable_lock, flags);
             kfree(entry);
             continue;
         }
         hlist_add_head(&entry->node, &inte_hash_table[bucket]);
         total_entry_count++;
-        write_unlock(&hashtable_lock);
+        write_unlock_irqrestore(&hashtable_lock, flags);
         pr_info("[KERNEL_SECURITY_CHECK]: Added: %s\n", entry->filename);
     }
     pr_info("[KERNEL_SECURITY_CHECK]: Processed [%d] entries. Total in table: [%d]\n", num_entries, total_entry_count);
@@ -843,8 +874,8 @@ static int resolve_sys_call_table(void)
 
 /*
  * ============================================================
- * [FIX v2.1] 拆两层：
- *   外层 ko_integrity_init  -> 普通 __init，CFI 通过
+ * [FIX v2.2] 两层 initcall:
+ *   外层 ko_integrity_init -> 普通 __init，CFI 通过
  *   内层 ko_integrity_init_impl -> __nocfi，函数体内间接调用不受 CFI 限制
  * ============================================================
  */
@@ -932,7 +963,7 @@ static int __init __nocfi ko_integrity_init_impl(void)
     INIT_DELAYED_WORK(&check_work, check_task);
     schedule_delayed_work(&check_work, check_interval);
     hash_init(inte_hash_table);
-    pr_emerg("KSC>>> 12. INIT SUCCESS! version 2.1\n");
+    pr_emerg("KSC>>> 12. INIT SUCCESS! version 2.2\n");
     return 0;
 
 init_failed:
