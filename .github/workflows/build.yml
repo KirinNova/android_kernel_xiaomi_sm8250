@@ -66,7 +66,7 @@ jobs:
             imagemagick libncurses-dev lib32z1-dev liblz4-tool \
             libsdl1.2-compat-dev libssl-dev libxml2-utils lzop pngcrush rsync \
             schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
-            dwarves libelf-dev
+            dwarves libelf-dev lld
 
       - name: Cache zyc-clang Toolchain
         id: cache-clang
