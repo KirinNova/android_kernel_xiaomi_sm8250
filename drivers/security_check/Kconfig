@@ -5,6 +5,10 @@
 
 config KERNEL_SECURITY_CHECK
 	bool "Kernel security and integrity check support"
+	depends on KPROBES
+	depends on CRYPTO
+	depends on CRYPTO_SHA256
+	depends on PROC_FS
 	default y
 	help
 	  Say Y here to enable kernel system call table and KO integrity checks.
