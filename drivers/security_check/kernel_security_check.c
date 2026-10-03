@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * 内核完整性检测模块
- * 包括系统调用表劫持检测和 KO 完整性检测
- */
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -26,7 +22,6 @@
 #define __nocfi
 #endif
 
-/***************** 配置 ************************************/
 #define SHA256_DIGEST_SIZE 32
 #define CHUNK_SIZE 4096
 #define MAX_ENTRIES 1000
@@ -66,7 +61,7 @@ static unsigned long syscall_func_addr[__NR_syscalls] = {0};
 static unsigned long trigger_syscall_func_addr[__NR_syscalls] = {0};
 #endif
 uint8_t  hash_syscall_table[SHA256_DIGEST_SIZE] = {0};
-static unsigned long *g_sys_call_table = NULL;   // 重命名避免冲突
+static unsigned long *g_sys_call_table = NULL;
 static struct delayed_work check_work;
 static unsigned long check_interval = 60 * 60 * HZ;
 static struct proc_dir_entry *proc_ko_entry;
@@ -80,9 +75,7 @@ static int ko_event_count = 0;
 static int systbl_event_count = 0;
 static int boot_stage = 0;
 static struct crypto_shash *g_sha256_tfm = NULL;
-/***********************配置结束******************************/
 
-/* 适配 4.19 架构的 struct load_info */
 struct load_info {
     const char *name;
     struct module *mod;
@@ -102,7 +95,6 @@ struct load_info {
     } index;
 };
 
-/* 将模块名中的 '-' 转换为 '_' */
 static void normalize_mod_name(char *name)
 {
     if (!name)
@@ -204,7 +196,6 @@ static int do_hash(unsigned long *data, uint32_t data_len, uint8_t *hash)
     return ret;
 }
 
-/************************** 系统调用表检测 ********************/
 static int get_timestamp_and_true(char *event_str, int len)
 {
     struct timespec64 now;
@@ -228,12 +219,13 @@ static void check_task(struct work_struct *work)
     int ret = 0;
     char event_str[64];
 
-    pr_info("[KERNEL_SECURITY_CHECK]: Performing hourly check...\n");
     if (READ_ONCE(boot_stage) != BOOT_COMPLETE) {
-        pr_info("[KERNEL_SECURITY_CHECK]: system boot, skip syscallTbl hash check.");
-        schedule_delayed_work(&check_work, check_interval);
-        return;
+        pr_info("[KERNEL_SECURITY_CHECK]: Auto activating boot_stage after 25s delay.\n");
+        WRITE_ONCE(boot_stage, BOOT_COMPLETE);
     }
+
+    pr_info("[KERNEL_SECURITY_CHECK]: Performing hourly check...\n");
+
     memset(hash_syscall_table, 0xFF, sizeof(hash_syscall_table));
     ret = do_hash(g_sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
     if (ret != 0) {
@@ -329,9 +321,7 @@ static void trigger_clean_event_manual(void)
     systbl_event_count = 0;
     write_unlock(&systbl_events_list_rwlock);
 }
-/**************************** 系统调用表检测结束 *************/
 
-/*************************** 查找 KO 名称 ***********************/
 static char *next_tag_safe(char *string, unsigned long *secsize)
 {
     unsigned long len = strnlen(string, *secsize);
@@ -387,9 +377,7 @@ static char *get_modinfo_name_safe(const struct load_info *info)
     }
     return NULL;
 }
-/*************************** 查找 KO 名称结束 ***********************/
 
-/*************************** 哈希表查找 *********************************/
 bool check_ko_exist_in_hash_tbl(const char *filename)
 {
     u32 hash_key = jhash(filename, strlen(filename), 0);
@@ -433,9 +421,7 @@ unsigned char *find_hash_by_name(const char *filename)
     read_unlock(&hashtable_lock);
     return NULL;
 }
-/********************************** 哈希表查找结束 *************************************/
 
-/*************************** Hook 入口 ******************************/
 static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
 {
     int ret = 0;
@@ -491,7 +477,7 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
         }
         mod += chunk;
         remaining -= chunk;
-        if (unlikely((ktime_get_ns() - start_ns) > 100 * 1000 * 1000)) { // 100ms
+        if (unlikely((ktime_get_ns() - start_ns) > 100 * 1000 * 1000)) {
             pr_err_ratelimited("[KERNEL_SECURITY_CHECK]: Checking timeout for large module!\n");
             goto out_clean_desc;
         }
@@ -509,7 +495,7 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
     }
     pr_info("[KERNEL_SECURITY_CHECK]: ko_name is [%s].", ko_name);
     scnprintf(ko_name_with_suffix, sizeof(ko_name_with_suffix), "%s.ko", ko_name);
-    normalize_mod_name(ko_name_with_suffix);   // 统一名称格式
+    normalize_mod_name(ko_name_with_suffix);
     init_hash = find_hash_by_name(ko_name_with_suffix);
     if (init_hash == NULL) {
         pr_info("[KERNEL_SECURITY_CHECK]: ko:[%s] hash not found, maybe unknown ko.", ko_name_with_suffix);
@@ -528,14 +514,12 @@ out_clean_desc:
     memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(g_sha256_tfm));
     return 0;
 }
-/*************************** Hook 入口结束 ******************************/
 
 static struct kretprobe hash_probe = {
     .entry_handler = hash_probe_entry,
     .maxactive = 100,
 };
 
-/********************** 发送者检查 ***********************************/
 static bool is_valid_sender(void)
 {
     struct task_struct *task = current;
@@ -563,9 +547,7 @@ static bool is_system_or_root_sender(void)
     }
     return true;
 }
-/********************** 发送者检查结束 ***********************************/
 
-/********************** proc 配置 ********************************/
 static int ko_proc_show(struct seq_file *m, void *v)
 {
     int i;
@@ -622,7 +604,6 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
     if (copy_from_user(&header_val, buffer, sizeof(u32)))
         return -EFAULT;
 
-    // KO Event
     if (header_val == KO_EVENT_FLAG) {
         if (count < sizeof(u32) * 2)
             return -EINVAL;
@@ -643,7 +624,7 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
         kfree(event_buf);
         return count;
     }
-    // 哈希条目
+
     num_entries = (int)header_val;
     if (num_entries <= 0 || num_entries > MAX_ENTRIES) {
         pr_err("[KERNEL_SECURITY_CHECK]: Invalid number of entries: %d\n", num_entries);
@@ -747,9 +728,7 @@ static ssize_t proc_write_status(struct file *file, const char __user *buffer, s
         WRITE_ONCE(boot_stage, status);
     return count;
 }
-/********************** proc 配置结束 **************************/
 
-/********************** file_operations ******************************/
 static const struct file_operations proc_fops_ko = {
     .owner   = THIS_MODULE,
     .open    = proc_open_ko,
@@ -773,7 +752,6 @@ static const struct file_operations proc_fops_status = {
     .open  = simple_open,
     .write = proc_write_status,
 };
-/********************** file_operations 结束 **************************/
 
 static int __init __nocfi ko_integrity_init(void)
 {
@@ -811,7 +789,6 @@ static int __init __nocfi ko_integrity_init(void)
     proc_set_user(proc_status_entry, KUIDT_INIT(0), KGIDT_INIT(0));
     pr_info("[KERNEL_SECURITY_CHECK]: create /proc/inte_* succeed \n");
 
-    // 注册 load_module 钩子
     hash_probe.kp.symbol_name = "load_module";
     ret = register_kretprobe(&hash_probe);
     if (ret < 0) {
@@ -847,9 +824,9 @@ static int __init __nocfi ko_integrity_init(void)
         pr_err("[KERNEL_SECURITY_CHECK]: init hash for syscall_tbl failed.");
         goto init_failed;
     }
-    pr_info("[KERNEL_SECURITY_CHECK]: set DELAYED_WORK succeed. (interval 1H)");
+    pr_info("[KERNEL_SECURITY_CHECK]: set DELAYED_WORK succeed. (first run after 25s, then 1H)");
     INIT_DELAYED_WORK(&check_work, check_task);
-    schedule_delayed_work(&check_work, check_interval);
+    schedule_delayed_work(&check_work, 25 * HZ);
     hash_init(inte_hash_table);
     pr_info("[KERNEL_SECURITY_CHECK]: init success! , version :0.16\n");
     return ret;
