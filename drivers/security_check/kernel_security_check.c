@@ -2,7 +2,7 @@
 * File: kernel_security_check.c
 * Author: cenjun
 * Data: 2025-7-20
-* Version 1.7 (Final: Linux 4.19 ARM64 + CFI/LTO + CC_WERROR)
+* Version 1.8 (Debug pr_err + init call trace)
 * Desc: 内核完整性检测，包括系统调用表劫持检测和ko完整性检测
 ******************************************************************/
 
@@ -25,12 +25,7 @@
 #include <linux/uidgid.h>
 #include <linux/slab.h>
 #include <asm/unistd.h>
-/* [改动1] 删除 #include <linux/kallsyms.h> */
 
-/*
- * [改动2] sys_call_table 在本内核已被 EXPORT_SYMBOL
- * 直接 extern 引用，避免 kallsyms_lookup_name 未导出
- */
 #if defined(CONFIG_ARM64)
 typedef long (*syscall_fn_t)(const struct pt_regs *);
 extern const syscall_fn_t sys_call_table[];
@@ -49,10 +44,8 @@ extern unsigned long *sys_call_table;
 #define KO_EVENT_FLAG 10000
 #define BOOT_COMPLETE 1
 
-/* 4.19 上不容易同时开 3 个 DEBUG config，强制打开调试触发接口 */
 #define CHECK_DEBUG 1
 
-/* CFI 兼容：4.19 部分内核未定义 __nocfi */
 #ifndef __nocfi
 #define __nocfi
 #endif
@@ -73,7 +66,6 @@ static rwlock_t hashtable_lock;
 static rwlock_t ko_events_list_rwlock;
 static rwlock_t systbl_events_list_rwlock;
 
-/* __NR_syscalls 在 ARM64 未定义，使用 NR_syscalls */
 #ifdef __NR_syscalls
 #define SYS_CALL_TBL_SIZE  __NR_syscalls
 #elif defined(NR_syscalls)
@@ -116,12 +108,6 @@ typedef struct elfhdr Elf_Ehdr;
 typedef struct elf_shdr Elf_Shdr;
 #endif
 
-/*
- * ============================================================
- * [改动3] 4.19 内核的 struct load_info 布局
- * 与 kernel/module-internal.h 完全一致
- * ============================================================
- */
 struct load_info {
     const char *name;
     struct module *mod;
@@ -140,6 +126,9 @@ struct load_info {
         unsigned int sym, str, mod, vers, info, pcpu;
     } index;
 };
+
+/* =========== 以下是 add_ko_event 等未改动的函数 =========== */
+/* 从你贴的原始代码直接复制，唯一区别是 init 函数被替换 */
 
 int add_ko_event(const char *event_str)
 {
@@ -549,7 +538,7 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
         }
         mod += chunk;
         remaining -= chunk;
-        if (unlikely((ktime_get_ns() - start_ns) > 100ULL * 1000 * 1000)) { // 100ms
+        if (unlikely((ktime_get_ns() - start_ns) > 100ULL * 1000 * 1000)) {
             pr_err_ratelimited("[KERNEL_SECURITY_CHECK]: Checking timeout for large module!\n");
             goto out_clean_desc;
         }
@@ -838,10 +827,6 @@ static const struct file_operations proc_fops_status = {
 };
 /********************** file_operations(end) **************************/
 
-/*
- * [改动4] sys_call_table 在本内核已被 EXPORT_SYMBOL
- * 直接 extern 引用，避免 kallsyms_lookup_name 未导出
- */
 static int resolve_sys_call_table(void)
 {
 #if defined(CONFIG_ARM64)
@@ -850,92 +835,106 @@ static int resolve_sys_call_table(void)
     g_sys_call_table = sys_call_table;
 #endif
     if (!g_sys_call_table) {
-        pr_err("[KERNEL_SECURITY_CHECK]: sys_call_table is NULL\n");
+        pr_err("KSC>>> FAIL: sys_call_table is NULL\n");
         return -ENOENT;
     }
-    pr_info("[KERNEL_SECURITY_CHECK]: sys_call_table @ 0x%lx\n",
-            (unsigned long)g_sys_call_table);
+    pr_err("KSC>>> sys_call_table @ 0x%lx\n", (unsigned long)g_sys_call_table);
     return 0;
 }
 
 /*
- * [CFI] __init 加 __nocfi，避免 CFI 检查拦截 kretprobe 注册
+ * ============================================================
+ * [DEBUG] init 全用 pr_err，每步打点
+ * ============================================================
  */
 static int __init __nocfi ko_integrity_init(void)
 {
     int ret = 0;
 
+    pr_err("KSC>>> >>> >>> INIT ENTERED <<< <<< <<<\n");
+
     rwlock_init(&hashtable_lock);
     rwlock_init(&ko_events_list_rwlock);
     rwlock_init(&systbl_events_list_rwlock);
+    pr_err("KSC>>> 1. rwlock init done\n");
 
     proc_ko_entry = proc_create("inte_ko", 0664, NULL, &proc_fops_ko);
     if (!proc_ko_entry) {
-        pr_err("[KERNEL_SECURITY_CHECK]: Failed to create /proc/inte_ko\n");
+        pr_err("KSC>>> FAIL: proc_create inte_ko\n");
         return -ENOMEM;
     }
     proc_set_user(proc_ko_entry, KUIDT_INIT(0), KGIDT_INIT(0));
+    pr_err("KSC>>> 2. /proc/inte_ko OK\n");
 
     proc_systbl_entry = proc_create("inte_systbl", 0664, NULL, &proc_fops_systbl);
     if (!proc_systbl_entry) {
-        pr_err("[KERNEL_SECURITY_CHECK]: Failed to create /proc/inte_systbl\n");
+        pr_err("KSC>>> FAIL: proc_create inte_systbl\n");
         ret = -ENOMEM;
         goto proc_failed;
     }
     proc_set_user(proc_systbl_entry, KUIDT_INIT(0), KGIDT_INIT(0));
+    pr_err("KSC>>> 3. /proc/inte_systbl OK\n");
 
     proc_status_entry = proc_create("inte_status", 0660, NULL, &proc_fops_status);
     if (!proc_status_entry) {
+        pr_err("KSC>>> FAIL: proc_create inte_status\n");
         ret = -ENOMEM;
-        pr_err("[KERNEL_SECURITY_CHECK]: Failed to create /proc/inte_status\n");
         goto proc_failed;
     }
     proc_set_user(proc_status_entry, KUIDT_INIT(0), KGIDT_INIT(0));
+    pr_err("KSC>>> 4. /proc/inte_status OK\n");
 
-    pr_info("[KERNEL_SECURITY_CHECK]: create /proc/inte_* succeed \n");
-
+    pr_err("KSC>>> 5. before register_kretprobe\n");
     hash_probe.kp.symbol_name = "load_module";
     ret = register_kretprobe(&hash_probe);
     if (ret < 0) {
-        pr_err("[KERNEL_SECURITY_CHECK]: hash_probe register failed ! ret=%d\n", ret);
+        pr_err("KSC>>> FAIL: register_kretprobe ret=%d\n", ret);
         goto proc_failed;
     }
+    pr_err("KSC>>> 6. kretprobe registered OK\n");
 
+    pr_err("KSC>>> 7. before crypto_alloc_shash\n");
     g_sha256_tfm = crypto_alloc_shash("sha256", 0, 0);
     if (IS_ERR(g_sha256_tfm)) {
-        pr_err("[KERNEL_SECURITY_CHECK]: Failed to allocate sha256 tfm.\n");
+        pr_err("KSC>>> FAIL: crypto_alloc_shash ret=%ld\n", PTR_ERR(g_sha256_tfm));
         ret = PTR_ERR(g_sha256_tfm);
         g_sha256_tfm = NULL;
         goto init_failed;
     }
+    pr_err("KSC>>> 8. sha256 tfm OK\n");
 
+    pr_err("KSC>>> 9. before resolve_sys_call_table\n");
     ret = resolve_sys_call_table();
     if (ret) {
+        pr_err("KSC>>> FAIL: resolve_sys_call_table ret=%d\n", ret);
         goto init_failed;
     }
+    pr_err("KSC>>> 10. sys_call_table OK\n");
 
     memcpy(syscall_func_addr, g_sys_call_table, sizeof(syscall_func_addr));
     ret = do_hash(syscall_func_addr, sizeof(syscall_func_addr), hash_systbl_init);
     if (ret == 0) {
-        pr_info("[KERNEL_SECURITY_CHECK]: init hash for syscall_tbl succeed.");
+        pr_err("KSC>>> 11. init hash for syscall_tbl OK\n");
     } else {
-        pr_err("[KERNEL_SECURITY_CHECK]: init hash for syscall_tbl failed.");
+        pr_err("KSC>>> FAIL: do_hash ret=%d\n", ret);
         goto init_failed;
     }
 
     INIT_DELAYED_WORK(&check_work, check_task);
     schedule_delayed_work(&check_work, check_interval);
     hash_init(inte_hash_table);
-    pr_info("[KERNEL_SECURITY_CHECK]:init success! , version :0.18\n");
-    return ret;
+    pr_err("KSC>>> 12. INIT SUCCESS! version 0.18\n");
+    return 0;
 
 init_failed:
+    pr_err("KSC>>> init_failed path\n");
     if (g_sha256_tfm && !IS_ERR(g_sha256_tfm)) {
         crypto_free_shash(g_sha256_tfm);
         g_sha256_tfm = NULL;
     }
     unregister_kretprobe(&hash_probe);
 proc_failed:
+    pr_err("KSC>>> proc_failed path\n");
     if (proc_ko_entry) { remove_proc_entry("inte_ko", NULL); proc_ko_entry = NULL; }
     if (proc_systbl_entry) { remove_proc_entry("inte_systbl", NULL); proc_systbl_entry = NULL; }
     if (proc_status_entry) { remove_proc_entry("inte_status", NULL); proc_status_entry = NULL; }
