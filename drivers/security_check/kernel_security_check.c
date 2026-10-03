@@ -1,12 +1,8 @@
-/****************************************************************
-* File: oplus_kernel_security_check.c
-* Author: cenjun
-* Data: 2025-7-20
-* Version 1.0
-* Desc:和平精英需求-内核完整性检测，包括系统调用表劫持检测和ko完整性检测
-* Modify:    Date        Author          Desc.
-*         2025-12-5      cenjun          init
-******************************************************************/
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * 内核完整性检测模块
+ * 包括系统调用表劫持检测和 KO 完整性检测
+ */
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -26,12 +22,11 @@
 #include <linux/jhash.h>
 #include <linux/rwlock.h>
 
-/* 补丁 1：Linux 4.19 内核没有 __nocfi 宏，添加兜底定义 */
 #ifndef __nocfi
 #define __nocfi
 #endif
 
-/***************** config ************************************/
+/***************** 配置 ************************************/
 #define SHA256_DIGEST_SIZE 32
 #define CHUNK_SIZE 4096
 #define MAX_ENTRIES 1000
@@ -41,6 +36,7 @@
 #define MAX_EVENTS_COUNT 10
 #define KO_EVENT_FLAG 10000
 #define BOOT_COMPLETE 1
+
 #if IS_ENABLED(CONFIG_DYNAMIC_DEBUG) && \
     IS_ENABLED(CONFIG_DEBUG_OBJECTS) && \
     IS_ENABLED(CONFIG_DEBUG_KMEMLEAK)
@@ -70,7 +66,7 @@ static unsigned long syscall_func_addr[__NR_syscalls] = {0};
 static unsigned long trigger_syscall_func_addr[__NR_syscalls] = {0};
 #endif
 uint8_t  hash_syscall_table[SHA256_DIGEST_SIZE] = {0};
-unsigned long *sys_call_table = NULL;
+static unsigned long *g_sys_call_table = NULL;   // 重命名避免冲突
 static struct delayed_work check_work;
 static unsigned long check_interval = 60 * 60 * HZ;
 static struct proc_dir_entry *proc_ko_entry;
@@ -84,27 +80,38 @@ static int ko_event_count = 0;
 static int systbl_event_count = 0;
 static int boot_stage = 0;
 static struct crypto_shash *g_sha256_tfm = NULL;
-/***********************config(end)******************************/
+/***********************配置结束******************************/
 
-/* 补丁 2：适配 4.19 架构的 struct load_info，防止内存偏移错位 */
+/* 适配 4.19 架构的 struct load_info */
 struct load_info {
-        const char *name;
-        struct module *mod;
-        Elf_Ehdr *hdr;
-        unsigned long len;
-        Elf_Shdr *sechdrs;
-        char *secstrings, *strtab;
-        unsigned long symoffs, stroffs, init_typeoffs, core_typeoffs;
-        struct _ddebug *debug;
-        unsigned int num_debug;
-        bool sig_ok;
+    const char *name;
+    struct module *mod;
+    Elf_Ehdr *hdr;
+    unsigned long len;
+    Elf_Shdr *sechdrs;
+    char *secstrings, *strtab;
+    unsigned long symoffs, stroffs, init_typeoffs, core_typeoffs;
+    struct _ddebug *debug;
+    unsigned int num_debug;
+    bool sig_ok;
 #ifdef CONFIG_KALLSYMS
-        unsigned long mod_kallsyms_init_off;
+    unsigned long mod_kallsyms_init_off;
 #endif
-        struct {
-                unsigned int sym, str, mod, vers, info, pcpu;
-        } index;
+    struct {
+        unsigned int sym, str, mod, vers, info, pcpu;
+    } index;
 };
+
+/* 将模块名中的 '-' 转换为 '_' */
+static void normalize_mod_name(char *name)
+{
+    if (!name)
+        return;
+    for (; *name; name++) {
+        if (*name == '-')
+            *name = '_';
+    }
+}
 
 int add_ko_event(const char *event_str)
 {
@@ -119,12 +126,12 @@ int add_ko_event(const char *event_str)
     }
     event_new_str = kstrdup(event_str, GFP_ATOMIC);
     if (!event_new_str) {
-        pr_err("[KERNEL_SECURITY_CHECK]:Failed to allocate memory for ko event string\n");
+        pr_err("[KERNEL_SECURITY_CHECK]: Failed to allocate memory for ko event string\n");
         return -ENOMEM;
     }
     write_lock_irqsave(&ko_events_list_rwlock, flags);
     if (ko_event_count >= MAX_EVENTS_COUNT) {
-        pr_info("[KERNEL_SECURITY_CHECK]:ko Event list full (max [%d] events), replace the oldest event.\n", MAX_EVENTS_COUNT);
+        pr_info("[KERNEL_SECURITY_CHECK]: ko Event list full (max [%d] events), replace the oldest event.\n", MAX_EVENTS_COUNT);
         kfree(ko_events_list[0]);
         for (i = 0; i < ko_event_count - 1; i++) {
             ko_events_list[i] = ko_events_list[i + 1];
@@ -153,12 +160,12 @@ int add_systbl_event(const char *event_str)
     }
     event_new_str = kstrdup(event_str, GFP_KERNEL);
     if (!event_new_str) {
-        pr_err("[KERNEL_SECURITY_CHECK]:Failed to allocate memory for systbl event string\n");
+        pr_err("[KERNEL_SECURITY_CHECK]: Failed to allocate memory for systbl event string\n");
         return -ENOMEM;
     }
     write_lock(&systbl_events_list_rwlock);
     if (systbl_event_count >= MAX_EVENTS_COUNT) {
-        pr_info("[KERNEL_SECURITY_CHECK]:systbl Event list full (max [%d] events), replace the oldest event.\n", MAX_EVENTS_COUNT);
+        pr_info("[KERNEL_SECURITY_CHECK]: systbl Event list full (max [%d] events), replace the oldest event.\n", MAX_EVENTS_COUNT);
         kfree(systbl_events_list[0]);
         for (i = 0; i < systbl_event_count - 1; i++) {
             systbl_events_list[i] = systbl_events_list[i + 1];
@@ -197,19 +204,20 @@ static int do_hash(unsigned long *data, uint32_t data_len, uint8_t *hash)
     return ret;
 }
 
-/**************************syscallTBL check ********************/
+/************************** 系统调用表检测 ********************/
 static int get_timestamp_and_true(char *event_str, int len)
 {
     struct timespec64 now;
     int ret = 0;
     long long milliseconds;
 
-    if (event_str == NULL) { return -EFAULT; }
+    if (event_str == NULL)
+        return -EFAULT;
     ktime_get_real_ts64(&now);
     milliseconds = (long long)now.tv_sec * 1000LL + now.tv_nsec / 1000000;
     ret = snprintf(event_str, len, "%lld:true", milliseconds);
     if (ret < 0 || ret >= len) {
-        pr_err("[KERNEL_SECURITY_CHECK]:Failed to format systbl event string.\n");
+        pr_err("[KERNEL_SECURITY_CHECK]: Failed to format systbl event string.\n");
         return -EFAULT;
     }
     return 0;
@@ -220,20 +228,20 @@ static void check_task(struct work_struct *work)
     int ret = 0;
     char event_str[64];
 
-    pr_info("[KERNEL_SECURITY_CHECK]:Performing hourly check...\n");
+    pr_info("[KERNEL_SECURITY_CHECK]: Performing hourly check...\n");
     if (READ_ONCE(boot_stage) != BOOT_COMPLETE) {
         pr_info("[KERNEL_SECURITY_CHECK]: system boot, skip syscallTbl hash check.");
         schedule_delayed_work(&check_work, check_interval);
         return;
     }
     memset(hash_syscall_table, 0xFF, sizeof(hash_syscall_table));
-    ret = do_hash(sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
+    ret = do_hash(g_sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
     if (ret != 0) {
-        pr_err("[KERNEL_SECURITY_CHECK]:do hash for syscall_tbl failed.");
+        pr_err("[KERNEL_SECURITY_CHECK]: do hash for syscall_tbl failed.");
         goto reschedule;
     }
     if (memcmp(hash_syscall_table, hash_systbl_init, sizeof(hash_syscall_table)) != 0) {
-        pr_info("[KERNEL_SECURITY_CHECK]:syscall_tbl maybe modified.");
+        pr_info("[KERNEL_SECURITY_CHECK]: syscall_tbl maybe modified.");
         memset(event_str, 0, sizeof(event_str));
         if (get_timestamp_and_true(event_str, sizeof(event_str))) {
             pr_err("[KERNEL_SECURITY_CHECK]: get_timestamp_and_true failed.");
@@ -255,18 +263,18 @@ static void trigger_systbl_check_manual(void)
     char event_str[64];
 
     memset(hash_syscall_table, 0xFF, sizeof(hash_syscall_table));
-    ret = do_hash(sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
+    ret = do_hash(g_sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
     if (ret != 0) {
-        pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] do hash for syscall_tbl failed.");
+        pr_err("[KERNEL_SECURITY_CHECK]: [trigger_systbl_check_manual] do hash for syscall_tbl failed.");
     }
     if (memcmp(hash_syscall_table, hash_systbl_init, sizeof(hash_syscall_table)) != 0) {
-        pr_info("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] syscall_tbl maybe modified.");
+        pr_info("[KERNEL_SECURITY_CHECK]: [trigger_systbl_check_manual] syscall_tbl maybe modified.");
         memset(event_str, 0, sizeof(event_str));
         if (get_timestamp_and_true(event_str, sizeof(event_str))) {
-            pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] get_timestamp_and_true failed.");
+            pr_err("[KERNEL_SECURITY_CHECK]: [trigger_systbl_check_manual] get_timestamp_and_true failed.");
         } else {
             if (add_systbl_event(event_str)) {
-                pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] add_systbl_event failed.");
+                pr_err("[KERNEL_SECURITY_CHECK]: [trigger_systbl_check_manual] add_systbl_event failed.");
             }
         }
     }
@@ -278,19 +286,19 @@ static void trigger_systbl_modify_manual(void)
     char event_str[20];
 
     memset(hash_syscall_table, 0xFF, sizeof(hash_syscall_table));
-    memcpy(trigger_syscall_func_addr, sys_call_table, sizeof(trigger_syscall_func_addr));
+    memcpy(trigger_syscall_func_addr, g_sys_call_table, sizeof(trigger_syscall_func_addr));
     trigger_syscall_func_addr[0] = (unsigned long)(0);
     ret = do_hash(trigger_syscall_func_addr, sizeof(trigger_syscall_func_addr), hash_syscall_table);
     if (ret != 0) {
-        pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] do hash for syscall_tbl failed.");
+        pr_err("[KERNEL_SECURITY_CHECK]: [trigger_systbl_check_manual] do hash for syscall_tbl failed.");
     }
     if (memcmp(hash_syscall_table, hash_systbl_init, sizeof(hash_syscall_table)) != 0) {
-        pr_info("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] syscall_tbl maybe modified.");
+        pr_info("[KERNEL_SECURITY_CHECK]: [trigger_systbl_check_manual] syscall_tbl maybe modified.");
         if (get_timestamp_and_true(event_str, sizeof(event_str))) {
-            pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] get_timestamp_and_true failed.");
+            pr_err("[KERNEL_SECURITY_CHECK]: [trigger_systbl_check_manual] get_timestamp_and_true failed.");
         } else {
             if (add_systbl_event(event_str)) {
-                pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] add_systbl_event failed.");
+                pr_err("[KERNEL_SECURITY_CHECK]: [trigger_systbl_check_manual] add_systbl_event failed.");
             }
         }
     }
@@ -321,70 +329,67 @@ static void trigger_clean_event_manual(void)
     systbl_event_count = 0;
     write_unlock(&systbl_events_list_rwlock);
 }
-/****************************syscallTBL check(end) *************/
+/**************************** 系统调用表检测结束 *************/
 
-/***************************find ko name ***********************/
+/*************************** 查找 KO 名称 ***********************/
 static char *next_tag_safe(char *string, unsigned long *secsize)
 {
-        unsigned long len = strnlen(string, *secsize);
-        if (len == *secsize) {
-            return NULL;
-        }
-        string += len + 1;
-        *secsize -= (len + 1);
-        while (*secsize > 0 && string[0] == 0) {
-                string++;
-                (*secsize)--;
-        }
-        return string;
+    unsigned long len = strnlen(string, *secsize);
+    if (len == *secsize)
+        return NULL;
+    string += len + 1;
+    *secsize -= (len + 1);
+    while (*secsize > 0 && string[0] == 0) {
+        string++;
+        (*secsize)--;
+    }
+    return string;
 }
 
 static char *get_modinfo_name_safe(const struct load_info *info)
 {
-        unsigned int i;
-        char *p;
-        const char *target = "name=";
-        const size_t target_len = 5;
-        int info_idx = -1;
-        int count = 0;
-        Elf_Ehdr *hdr = info->hdr;
-        Elf_Shdr *sechdrs, *strhdr;
-        char *secstrings;
+    unsigned int i;
+    char *p;
+    const char *target = "name=";
+    const size_t target_len = 5;
+    int info_idx = -1;
+    int count = 0;
+    Elf_Ehdr *hdr = info->hdr;
+    Elf_Shdr *sechdrs, *strhdr;
+    char *secstrings;
 
-        sechdrs = (void *)hdr + hdr->e_shoff;
-        if (hdr->e_shstrndx >= hdr->e_shnum)
-                return NULL;
-        strhdr = &sechdrs[hdr->e_shstrndx];
-        secstrings = (void *)hdr + strhdr->sh_offset;
-
-        for (i = 1; i < hdr->e_shnum; i++) {
-                char *curr_name;
-                if (sechdrs[i].sh_name >= strhdr->sh_size) {
-                    continue;
-                }
-                curr_name = secstrings + sechdrs[i].sh_name;
-                if (curr_name[0] == '.' && strcmp(curr_name, ".modinfo") == 0) {
-                        count++;
-                        info_idx = i;
-                        if (count > 1) {
-                            return NULL;
-                        }
-                }
-        }
-        if (count == 1) {
-                char *modinfo = (char *)hdr + sechdrs[info_idx].sh_offset;
-                unsigned long size = sechdrs[info_idx].sh_size;
-                for (p = modinfo; p; p = next_tag_safe(p, &size)) {
-                        if (size > target_len && memcmp(p, target, target_len) == 0) {
-                                return p + target_len;
-                        }
-                }
-        }
+    sechdrs = (void *)hdr + hdr->e_shoff;
+    if (hdr->e_shstrndx >= hdr->e_shnum)
         return NULL;
-}
-/***************************find ko name（end）***********************/
+    strhdr = &sechdrs[hdr->e_shstrndx];
+    secstrings = (void *)hdr + strhdr->sh_offset;
 
-/**********************************hash table search*********************************/
+    for (i = 1; i < hdr->e_shnum; i++) {
+        char *curr_name;
+        if (sechdrs[i].sh_name >= strhdr->sh_size)
+            continue;
+        curr_name = secstrings + sechdrs[i].sh_name;
+        if (curr_name[0] == '.' && strcmp(curr_name, ".modinfo") == 0) {
+            count++;
+            info_idx = i;
+            if (count > 1)
+                return NULL;
+        }
+    }
+    if (count == 1) {
+        char *modinfo = (char *)hdr + sechdrs[info_idx].sh_offset;
+        unsigned long size = sechdrs[info_idx].sh_size;
+        for (p = modinfo; p; p = next_tag_safe(p, &size)) {
+            if (size > target_len && memcmp(p, target, target_len) == 0) {
+                return p + target_len;
+            }
+        }
+    }
+    return NULL;
+}
+/*************************** 查找 KO 名称结束 ***********************/
+
+/*************************** 哈希表查找 *********************************/
 bool check_ko_exist_in_hash_tbl(const char *filename)
 {
     u32 hash_key = jhash(filename, strlen(filename), 0);
@@ -407,9 +412,8 @@ bool check_ko_exist_in_hash_tbl_nolock(const char *filename)
     struct hash_tbl_node *entry;
 
     hash_for_each_possible(inte_hash_table, entry, node, hash_key) {
-        if (strcmp(entry->filename, filename) == 0) {
+        if (strcmp(entry->filename, filename) == 0)
             return true;
-        }
     }
     return false;
 }
@@ -429,9 +433,9 @@ unsigned char *find_hash_by_name(const char *filename)
     read_unlock(&hashtable_lock);
     return NULL;
 }
-/**********************************hash table search(end)*************************************/
+/********************************** 哈希表查找结束 *************************************/
 
-/***************************Hook entry******************************/
+/*************************** Hook 入口 ******************************/
 static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
 {
     int ret = 0;
@@ -450,11 +454,9 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
         pr_info("[KERNEL_SECURITY_CHECK]: system boot, skip ko hash check.");
         return 0;
     }
-    if (!pr) {
+    if (!pr)
         return 0;
-    }
 
-    /* 补丁 4：保持 ARM64 的 regs[0] 取值 */
     ptr = (void *)pr->regs[0];
     if (!ptr) {
         pr_err_ratelimited("[KERNEL_SECURITY_CHECK]: Invalid ptr: pr->regs[0]");
@@ -507,6 +509,7 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
     }
     pr_info("[KERNEL_SECURITY_CHECK]: ko_name is [%s].", ko_name);
     scnprintf(ko_name_with_suffix, sizeof(ko_name_with_suffix), "%s.ko", ko_name);
+    normalize_mod_name(ko_name_with_suffix);   // 统一名称格式
     init_hash = find_hash_by_name(ko_name_with_suffix);
     if (init_hash == NULL) {
         pr_info("[KERNEL_SECURITY_CHECK]: ko:[%s] hash not found, maybe unknown ko.", ko_name_with_suffix);
@@ -525,14 +528,14 @@ out_clean_desc:
     memzero_explicit(desc, sizeof(*desc) + crypto_shash_descsize(g_sha256_tfm));
     return 0;
 }
-/***************************Hook entry(end)******************************/
+/*************************** Hook 入口结束 ******************************/
 
 static struct kretprobe hash_probe = {
     .entry_handler = hash_probe_entry,
     .maxactive = 100,
 };
 
-/**********************check sender***********************************/
+/********************** 发送者检查 ***********************************/
 static bool is_valid_sender(void)
 {
     struct task_struct *task = current;
@@ -540,12 +543,12 @@ static bool is_valid_sender(void)
     uint32_t euid;
 
     if (strcmp(task->comm, expected_process) != 0) {
-        pr_err("[KERNEL_SECURITY_CHECK]:Invalid process: %s (expected: %s)\n", task->comm, expected_process);
+        pr_err("[KERNEL_SECURITY_CHECK]: Invalid process: %s (expected: %s)\n", task->comm, expected_process);
         return false;
     }
     euid = __kuid_val(current->cred->euid);
     if (euid != 1000) {
-        pr_err("[KO_INTEGRITY_VERI):Invalid user, euid : [%u] \n", euid);
+        pr_err("[KO_INTEGRITY_VERI] Invalid user, euid: [%u]\n", euid);
         return false;
     }
     return true;
@@ -555,23 +558,21 @@ static bool is_system_or_root_sender(void)
 {
     uint32_t euid = __kuid_val(current->cred->euid);
     if (euid != 1000 && euid != 0) {
-        pr_err("[KO_INTEGRITY_VERI):Invalid user, euid : [%u] \n", euid);
+        pr_err("[KO_INTEGRITY_VERI] Invalid user, euid: [%u]\n", euid);
         return false;
     }
     return true;
 }
+/********************** 发送者检查结束 ***********************************/
 
-/**********************check sender（end）***********************************/
-
-/********************** proc config********************************/
+/********************** proc 配置 ********************************/
 static int ko_proc_show(struct seq_file *m, void *v)
 {
     int i;
     read_lock(&ko_events_list_rwlock);
     for (i = 0; i < MAX_EVENTS_COUNT; i++) {
-        if (ko_events_list[i] == NULL) {
+        if (ko_events_list[i] == NULL)
             break;
-        }
         seq_printf(m, "%s\n", ko_events_list[i]);
     }
     read_unlock(&ko_events_list_rwlock);
@@ -583,9 +584,8 @@ static int systbl_proc_show(struct seq_file *m, void *v)
     int i;
     read_lock(&systbl_events_list_rwlock);
     for (i = 0; i < MAX_EVENTS_COUNT; i++) {
-        if (systbl_events_list[i] == NULL) {
+        if (systbl_events_list[i] == NULL)
             break;
-        }
         seq_printf(m, "%s\n", systbl_events_list[i]);
     }
     read_unlock(&systbl_events_list_rwlock);
@@ -600,17 +600,6 @@ static int proc_open_ko(struct inode *inode, struct file *file)
 static int proc_open_systbl(struct inode *inode, struct file *file)
 {
     return single_open(file, systbl_proc_show, NULL);
-}
-
-void normalize_mod_name(char *name)
-{
-    if (!name) {
-        return;
-    }
-    for (; *name; name++) {
-        if (*name == '-')
-            *name = '_';
-    }
 }
 
 static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_t count, loff_t *ppos)
@@ -628,16 +617,12 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
         pr_err("[KERNEL_SECURITY_CHECK]: Invalid sender process\n");
         return -EACCES;
     }
-    if (count < sizeof(u32)) {
+    if (count < sizeof(u32))
         return -EINVAL;
-    }
-    if (copy_from_user(&header_val, buffer, sizeof(u32))) {
+    if (copy_from_user(&header_val, buffer, sizeof(u32)))
         return -EFAULT;
-    }
 
-    // ==========================================
     // KO Event
-    // ==========================================
     if (header_val == KO_EVENT_FLAG) {
         if (count < sizeof(u32) * 2)
             return -EINVAL;
@@ -658,9 +643,7 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
         kfree(event_buf);
         return count;
     }
-    // ==========================================
-    //  Hash Entries
-    // ==========================================
+    // 哈希条目
     num_entries = (int)header_val;
     if (num_entries <= 0 || num_entries > MAX_ENTRIES) {
         pr_err("[KERNEL_SECURITY_CHECK]: Invalid number of entries: %d\n", num_entries);
@@ -717,28 +700,30 @@ static ssize_t proc_write_systbl(struct file *file, const char __user *buffer, s
 #if CHECK_DEBUG
     char flag;
     if (!is_system_or_root_sender()) {
-        pr_err("[KERNEL_SECURITY_CHECK]:Invalid sender process\n");
+        pr_err("[KERNEL_SECURITY_CHECK]: Invalid sender process\n");
         return -EACCES;
     }
     if (count < sizeof(char) || copy_from_user(&flag, buffer, sizeof(char))) {
-        pr_err("[KERNEL_SECURITY_CHECK]:Failed to copy systbl echo flag.\n");
+        pr_err("[KERNEL_SECURITY_CHECK]: Failed to copy systbl echo flag.\n");
         return -EFAULT;
     }
-    pr_info("[KERNEL_SECURITY_CHECK]:flag is :[%c].\n", flag);
+    pr_info("[KERNEL_SECURITY_CHECK]: flag is :[%c].\n", flag);
     if (flag == '0') {
         trigger_systbl_check_manual();
         pr_info("[KERNEL_SECURITY_CHECK]: do trigger_systbl_check_manual\n");
     }
-
     if (flag == '1') {
         trigger_systbl_modify_manual();
         pr_info("[KERNEL_SECURITY_CHECK]: do trigger_systbl_modify_manual\n");
     }
-
     if (flag == '2') {
         trigger_clean_event_manual();
         pr_info("[KERNEL_SECURITY_CHECK]: do trigger_clean_event_manual\n");
     }
+#else
+    (void)file;
+    (void)buffer;
+    (void)ppos;
 #endif
     return count;
 }
@@ -747,26 +732,24 @@ static ssize_t proc_write_status(struct file *file, const char __user *buffer, s
 {
     int status = -1;
     if (!is_system_or_root_sender()) {
-        pr_err("[KERNEL_SECURITY_CHECK]:Invalid sender process\n");
+        pr_err("[KERNEL_SECURITY_CHECK]: Invalid sender process\n");
         return -EACCES;
     }
     if (count < sizeof(int)) {
-        pr_err("[KERNEL_SECURITY_CHECK]:Invalid buffer size\n");
+        pr_err("[KERNEL_SECURITY_CHECK]: Invalid buffer size\n");
+        return -EINVAL;
     }
     if (copy_from_user(&status, buffer, sizeof(int))) {
-        pr_err("[KERNEL_SECURITY_CHECK]:Failed to copy status.\n");
+        pr_err("[KERNEL_SECURITY_CHECK]: Failed to copy status.\n");
         return -EFAULT;
     }
-    if (status == BOOT_COMPLETE) {
+    if (status == BOOT_COMPLETE)
         WRITE_ONCE(boot_stage, status);
-    }
     return count;
 }
+/********************** proc 配置结束 **************************/
 
-/**********************proc config(end)**************************/
-
-/* 补丁 3：替换为 4.19 内核支持的 struct file_operations */
-/********************** proc_ops ******************************/
+/********************** file_operations ******************************/
 static const struct file_operations proc_fops_ko = {
     .owner   = THIS_MODULE,
     .open    = proc_open_ko,
@@ -790,10 +773,8 @@ static const struct file_operations proc_fops_status = {
     .open  = simple_open,
     .write = proc_write_status,
 };
+/********************** file_operations 结束 **************************/
 
-/********************** proc_ops(end) **************************/
-
-/* 补丁 6：保留 __nocfi */
 static int __init __nocfi ko_integrity_init(void)
 {
     int ret = 0;
@@ -805,39 +786,40 @@ static int __init __nocfi ko_integrity_init(void)
     rwlock_init(&hashtable_lock);
     rwlock_init(&ko_events_list_rwlock);
     rwlock_init(&systbl_events_list_rwlock);
+
     proc_ko_entry = proc_create("inte_ko", 0664, NULL, &proc_fops_ko);
-    proc_set_user(proc_ko_entry, KUIDT_INIT(0), KGIDT_INIT(0));
     if (!proc_ko_entry) {
         pr_err("[KERNEL_SECURITY_CHECK]: Failed to create /proc/inte_ko\n");
         return -ENOMEM;
     }
+    proc_set_user(proc_ko_entry, KUIDT_INIT(0), KGIDT_INIT(0));
+
     proc_systbl_entry = proc_create("inte_systbl", 0664, NULL, &proc_fops_systbl);
-    proc_set_user(proc_systbl_entry, KUIDT_INIT(0), KGIDT_INIT(0));
     if (!proc_systbl_entry) {
         pr_err("[KERNEL_SECURITY_CHECK]: Failed to create /proc/inte_systbl\n");
         ret = -ENOMEM;
         goto proc_failed;
     }
+    proc_set_user(proc_systbl_entry, KUIDT_INIT(0), KGIDT_INIT(0));
+
     proc_status_entry = proc_create("inte_status", 0660, NULL, &proc_fops_status);
-    proc_set_user(proc_status_entry, KUIDT_INIT(0), KGIDT_INIT(0));
     if (!proc_status_entry) {
-        ret = -ENOMEM;
         pr_err("[KERNEL_SECURITY_CHECK]: Failed to create /proc/inte_status\n");
+        ret = -ENOMEM;
         goto proc_failed;
     }
+    proc_set_user(proc_status_entry, KUIDT_INIT(0), KGIDT_INIT(0));
     pr_info("[KERNEL_SECURITY_CHECK]: create /proc/inte_* succeed \n");
 
-    /***************************resigter main hook ***********************/
+    // 注册 load_module 钩子
     hash_probe.kp.symbol_name = "load_module";
     ret = register_kretprobe(&hash_probe);
     if (ret < 0) {
         pr_err("[KERNEL_SECURITY_CHECK]: hash_probe register failed ! \n ");
         goto proc_failed;
     }
-    /***************************resigter main hook(end) ***********************/
 
     ret = register_kprobe(&getname_kp);
-    /* 补丁 5：修改错误提示，指明可能被黑名单拦截 */
     if (ret < 0) {
         pr_err("[KERNEL_SECURITY_CHECK]: find [kallsyms_lookup_name] address failed, "
                "maybe blocked by kprobe_blacklist, need alternative sys_call_table locate method ! \n");
@@ -845,8 +827,8 @@ static int __init __nocfi ko_integrity_init(void)
     }
     look_func = (ksym_lookup_name)getname_kp.addr;
     unregister_kprobe(&getname_kp);
-    sys_call_table = (unsigned long *)look_func("sys_call_table");
-    if (!sys_call_table) {
+    g_sys_call_table = (unsigned long *)look_func("sys_call_table");
+    if (!g_sys_call_table) {
         pr_err("[KERNEL_SECURITY_CHECK]: Failed to find sys_call_table\n");
         ret = -ENOENT;
         goto init_failed;
@@ -857,7 +839,7 @@ static int __init __nocfi ko_integrity_init(void)
         ret = PTR_ERR(g_sha256_tfm);
         goto init_failed;
     }
-    memcpy(syscall_func_addr, sys_call_table, sizeof(syscall_func_addr));
+    memcpy(syscall_func_addr, g_sys_call_table, sizeof(syscall_func_addr));
     ret = do_hash(syscall_func_addr, sizeof(syscall_func_addr), hash_systbl_init);
     if (ret == 0) {
         pr_info("[KERNEL_SECURITY_CHECK]: init hash for syscall_tbl succeed.");
@@ -867,28 +849,24 @@ static int __init __nocfi ko_integrity_init(void)
     }
     pr_info("[KERNEL_SECURITY_CHECK]: set DELAYED_WORK succeed. (interval 1H)");
     INIT_DELAYED_WORK(&check_work, check_task);
-    // first schedule（1h）
     schedule_delayed_work(&check_work, check_interval);
     hash_init(inte_hash_table);
-    pr_info("[KERNEL_SECURITY_CHECK]:init success! , version :0.16\n");
+    pr_info("[KERNEL_SECURITY_CHECK]: init success! , version :0.16\n");
     return ret;
 
 init_failed:
     if (g_sha256_tfm && !IS_ERR(g_sha256_tfm)) {
-            crypto_free_shash(g_sha256_tfm);
-            g_sha256_tfm = NULL;
-        }
+        crypto_free_shash(g_sha256_tfm);
+        g_sha256_tfm = NULL;
+    }
     unregister_kretprobe(&hash_probe);
 proc_failed:
-    if (proc_ko_entry) {
+    if (proc_ko_entry)
         remove_proc_entry("inte_ko", NULL);
-    }
-    if (proc_systbl_entry) {
+    if (proc_systbl_entry)
         remove_proc_entry("inte_systbl", NULL);
-    }
-    if (proc_status_entry) {
+    if (proc_status_entry)
         remove_proc_entry("inte_status", NULL);
-    }
     return ret;
 }
 
@@ -900,9 +878,8 @@ static void __exit ko_integrity_exit(void)
 
     cancel_delayed_work_sync(&check_work);
     unregister_kretprobe(&hash_probe);
-    if (g_sha256_tfm) {
+    if (g_sha256_tfm)
         crypto_free_shash(g_sha256_tfm);
-    }
     write_lock(&hashtable_lock);
     hash_for_each_safe(inte_hash_table, i, tmp, entry, node) {
         hash_del(&entry->node);
@@ -910,15 +887,12 @@ static void __exit ko_integrity_exit(void)
     }
     write_unlock(&hashtable_lock);
     trigger_clean_event_manual();
-    if (proc_ko_entry) {
+    if (proc_ko_entry)
         remove_proc_entry("inte_ko", NULL);
-    }
-    if (proc_systbl_entry) {
+    if (proc_systbl_entry)
         remove_proc_entry("inte_systbl", NULL);
-    }
-    if (proc_status_entry) {
+    if (proc_status_entry)
         remove_proc_entry("inte_status", NULL);
-    }
     pr_info("[KERNEL_SECURITY_CHECK]: exit success!");
 }
 
