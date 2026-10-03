@@ -48,15 +48,18 @@
 #else
 #define CHECK_DEBUG 0
 #endif
+
 struct hash_entry {
     char filename[FILENAME_LEN];
     unsigned char hash[INTE_HASH_SIZE];
 };
+
 struct hash_tbl_node {
     char filename[FILENAME_LEN];
     unsigned char hash[INTE_HASH_SIZE];
     struct hlist_node node;
 };
+
 static DEFINE_HASHTABLE(inte_hash_table, INTE_HASH_BITS);
 static rwlock_t hashtable_lock;
 static rwlock_t ko_events_list_rwlock;
@@ -85,29 +88,31 @@ static struct crypto_shash *g_sha256_tfm = NULL;
 
 /* 补丁 2：适配 4.19 架构的 struct load_info，防止内存偏移错位 */
 struct load_info {
-	const char *name;
-	struct module *mod;
-	Elf_Ehdr *hdr;
-	unsigned long len;
-	Elf_Shdr *sechdrs;
-	char *secstrings, *strtab;
-	unsigned long symoffs, stroffs, init_typeoffs, core_typeoffs;
-	struct _ddebug *debug;
-	unsigned int num_debug;
-	bool sig_ok;
+        const char *name;
+        struct module *mod;
+        Elf_Ehdr *hdr;
+        unsigned long len;
+        Elf_Shdr *sechdrs;
+        char *secstrings, *strtab;
+        unsigned long symoffs, stroffs, init_typeoffs, core_typeoffs;
+        struct _ddebug *debug;
+        unsigned int num_debug;
+        bool sig_ok;
 #ifdef CONFIG_KALLSYMS
-	unsigned long mod_kallsyms_init_off;
+        unsigned long mod_kallsyms_init_off;
 #endif
-	struct {
-		unsigned int sym, str, mod, vers, info, pcpu;
-	} index;
+        struct {
+                unsigned int sym, str, mod, vers, info, pcpu;
+        } index;
 };
 
 int add_ko_event(const char *event_str)
 {
     int ret = 0;
+    int i;
     char *event_new_str;
     unsigned long flags;
+
     if (!event_str) {
         pr_err("[KERNEL_SECURITY_CHECK]: add_ko_event [event_str] is NULL.\n");
         return -EINVAL;
@@ -121,7 +126,7 @@ int add_ko_event(const char *event_str)
     if (ko_event_count >= MAX_EVENTS_COUNT) {
         pr_info("[KERNEL_SECURITY_CHECK]:ko Event list full (max [%d] events), replace the oldest event.\n", MAX_EVENTS_COUNT);
         kfree(ko_events_list[0]);
-        for (int i = 0; i < ko_event_count-1; i++) {
+        for (i = 0; i < ko_event_count - 1; i++) {
             ko_events_list[i] = ko_events_list[i + 1];
         }
         ko_events_list[ko_event_count - 1] = event_new_str;
@@ -139,7 +144,9 @@ out_unlock:
 int add_systbl_event(const char *event_str)
 {
     int ret = 0;
+    int i;
     char *event_new_str;
+
     if (!event_str) {
         pr_err("[KERNEL_SECURITY_CHECK]: add_systbl_event [event_str] is NULL.\n");
         return -EINVAL;
@@ -153,7 +160,7 @@ int add_systbl_event(const char *event_str)
     if (systbl_event_count >= MAX_EVENTS_COUNT) {
         pr_info("[KERNEL_SECURITY_CHECK]:systbl Event list full (max [%d] events), replace the oldest event.\n", MAX_EVENTS_COUNT);
         kfree(systbl_events_list[0]);
-        for (int i = 0; i < systbl_event_count - 1; i++) {
+        for (i = 0; i < systbl_event_count - 1; i++) {
             systbl_events_list[i] = systbl_events_list[i + 1];
         }
         systbl_events_list[systbl_event_count - 1] = event_new_str;
@@ -171,11 +178,12 @@ out_unlock:
 static int do_hash(unsigned long *data, uint32_t data_len, uint8_t *hash)
 {
     int ret;
+    SHASH_DESC_ON_STACK(desc, g_sha256_tfm);
+
     if (unlikely(IS_ERR_OR_NULL(g_sha256_tfm))) {
         pr_err_ratelimited("[KERNEL_SECURITY_CHECK]: SHA256 TFM not initialized\n");
         return -ENODEV;
     }
-    SHASH_DESC_ON_STACK(desc, g_sha256_tfm);
     if (unlikely(!data || !hash)) {
         pr_err("[KERNEL_SECURITY_CHECK]: Invalid parameters for do_hash\n");
         return -EINVAL;
@@ -195,7 +203,8 @@ static int get_timestamp_and_true(char *event_str, int len)
     struct timespec64 now;
     int ret = 0;
     long long milliseconds;
-    if (event_str == NULL) {return -EFAULT;}
+
+    if (event_str == NULL) { return -EFAULT; }
     ktime_get_real_ts64(&now);
     milliseconds = (long long)now.tv_sec * 1000LL + now.tv_nsec / 1000000;
     ret = snprintf(event_str, len, "%lld:true", milliseconds);
@@ -209,6 +218,8 @@ static int get_timestamp_and_true(char *event_str, int len)
 static void check_task(struct work_struct *work)
 {
     int ret = 0;
+    char event_str[64];
+
     pr_info("[KERNEL_SECURITY_CHECK]:Performing hourly check...\n");
     if (READ_ONCE(boot_stage) != BOOT_COMPLETE) {
         pr_info("[KERNEL_SECURITY_CHECK]: system boot, skip syscallTbl hash check.");
@@ -223,7 +234,7 @@ static void check_task(struct work_struct *work)
     }
     if (memcmp(hash_syscall_table, hash_systbl_init, sizeof(hash_syscall_table)) != 0) {
         pr_info("[KERNEL_SECURITY_CHECK]:syscall_tbl maybe modified.");
-        char event_str[64] = {0};
+        memset(event_str, 0, sizeof(event_str));
         if (get_timestamp_and_true(event_str, sizeof(event_str))) {
             pr_err("[KERNEL_SECURITY_CHECK]: get_timestamp_and_true failed.");
         } else {
@@ -240,14 +251,17 @@ reschedule:
 #if CHECK_DEBUG
 static void trigger_systbl_check_manual(void)
 {
+    int ret;
+    char event_str[64];
+
     memset(hash_syscall_table, 0xFF, sizeof(hash_syscall_table));
-    int ret = do_hash(sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
+    ret = do_hash(sys_call_table, sizeof(syscall_func_addr), hash_syscall_table);
     if (ret != 0) {
         pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] do hash for syscall_tbl failed.");
     }
     if (memcmp(hash_syscall_table, hash_systbl_init, sizeof(hash_syscall_table)) != 0) {
         pr_info("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] syscall_tbl maybe modified.");
-        char event_str[64] = {0};
+        memset(event_str, 0, sizeof(event_str));
         if (get_timestamp_and_true(event_str, sizeof(event_str))) {
             pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] get_timestamp_and_true failed.");
         } else {
@@ -260,16 +274,18 @@ static void trigger_systbl_check_manual(void)
 
 static void trigger_systbl_modify_manual(void)
 {
+    int ret;
+    char event_str[20];
+
     memset(hash_syscall_table, 0xFF, sizeof(hash_syscall_table));
     memcpy(trigger_syscall_func_addr, sys_call_table, sizeof(trigger_syscall_func_addr));
     trigger_syscall_func_addr[0] = (unsigned long)(0);
-    int ret = do_hash(trigger_syscall_func_addr, sizeof(trigger_syscall_func_addr), hash_syscall_table);
+    ret = do_hash(trigger_syscall_func_addr, sizeof(trigger_syscall_func_addr), hash_syscall_table);
     if (ret != 0) {
         pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] do hash for syscall_tbl failed.");
     }
     if (memcmp(hash_syscall_table, hash_systbl_init, sizeof(hash_syscall_table)) != 0) {
         pr_info("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] syscall_tbl maybe modified.");
-        char event_str[20];
         if (get_timestamp_and_true(event_str, sizeof(event_str))) {
             pr_err("[KERNEL_SECURITY_CHECK]:[trigger_systbl_check_manual] get_timestamp_and_true failed.");
         } else {
@@ -280,10 +296,13 @@ static void trigger_systbl_modify_manual(void)
     }
 }
 #endif
+
 static void trigger_clean_event_manual(void)
 {
+    int i;
+
     write_lock(&ko_events_list_rwlock);
-    for (int i = 0; i < MAX_EVENTS_COUNT; i++) {
+    for (i = 0; i < MAX_EVENTS_COUNT; i++) {
         if (ko_events_list[i] != NULL) {
             kfree(ko_events_list[i]);
             ko_events_list[i] = NULL;
@@ -293,7 +312,7 @@ static void trigger_clean_event_manual(void)
     write_unlock(&ko_events_list_rwlock);
 
     write_lock(&systbl_events_list_rwlock);
-    for (int i = 0; i < MAX_EVENTS_COUNT; i++) {
+    for (i = 0; i < MAX_EVENTS_COUNT; i++) {
         if (systbl_events_list[i] != NULL) {
             kfree(systbl_events_list[i]);
             systbl_events_list[i] = NULL;
@@ -307,59 +326,61 @@ static void trigger_clean_event_manual(void)
 /***************************find ko name ***********************/
 static char *next_tag_safe(char *string, unsigned long *secsize)
 {
-	unsigned long len = strnlen(string, *secsize);
-	if (len == *secsize) {
-        return NULL;
-    }
-	string += len + 1;
-	*secsize -= (len + 1);
-	while (*secsize > 0 && string[0] == 0) {
-		string++;
-		(*secsize)--;
-	}
-	return string;
+        unsigned long len = strnlen(string, *secsize);
+        if (len == *secsize) {
+            return NULL;
+        }
+        string += len + 1;
+        *secsize -= (len + 1);
+        while (*secsize > 0 && string[0] == 0) {
+                string++;
+                (*secsize)--;
+        }
+        return string;
 }
 
 static char *get_modinfo_name_safe(const struct load_info *info)
 {
-	unsigned int i;
-	char *p;
-	const char *target = "name=";
-	const size_t target_len = 5;
+        unsigned int i;
+        char *p;
+        const char *target = "name=";
+        const size_t target_len = 5;
+        int info_idx = -1;
+        int count = 0;
+        Elf_Ehdr *hdr = info->hdr;
+        Elf_Shdr *sechdrs, *strhdr;
+        char *secstrings;
 
-	Elf_Ehdr *hdr = info->hdr;
-	Elf_Shdr *sechdrs, *strhdr;
-	char *secstrings;
-	sechdrs = (void *)hdr + hdr->e_shoff;
-	if (hdr->e_shstrndx >= hdr->e_shnum)
-		return NULL;
-	strhdr = &sechdrs[hdr->e_shstrndx];
-	secstrings = (void *)hdr + strhdr->sh_offset;
-	int info_idx = -1;
-	int count = 0;
-	for (i = 1; i < hdr->e_shnum; i++) {
-		if (sechdrs[i].sh_name >= strhdr->sh_size) {
-            continue;
-        }
-		char *curr_name = secstrings + sechdrs[i].sh_name;
-		if (curr_name[0] == '.' && strcmp(curr_name, ".modinfo") == 0) {
-			count++;
-			info_idx = i;
-			if (count > 1) {
+        sechdrs = (void *)hdr + hdr->e_shoff;
+        if (hdr->e_shstrndx >= hdr->e_shnum)
                 return NULL;
-            }
-		}
-	}
-	if (count == 1) {
-		char *modinfo = (char *)hdr + sechdrs[info_idx].sh_offset;
-		unsigned long size = sechdrs[info_idx].sh_size;
-		for (p = modinfo; p; p = next_tag_safe(p, &size)) {
-			if (size > target_len && memcmp(p, target, target_len) == 0) {
-				return p + target_len;
-			}
-		}
-	}
-	return NULL;
+        strhdr = &sechdrs[hdr->e_shstrndx];
+        secstrings = (void *)hdr + strhdr->sh_offset;
+
+        for (i = 1; i < hdr->e_shnum; i++) {
+                char *curr_name;
+                if (sechdrs[i].sh_name >= strhdr->sh_size) {
+                    continue;
+                }
+                curr_name = secstrings + sechdrs[i].sh_name;
+                if (curr_name[0] == '.' && strcmp(curr_name, ".modinfo") == 0) {
+                        count++;
+                        info_idx = i;
+                        if (count > 1) {
+                            return NULL;
+                        }
+                }
+        }
+        if (count == 1) {
+                char *modinfo = (char *)hdr + sechdrs[info_idx].sh_offset;
+                unsigned long size = sechdrs[info_idx].sh_size;
+                for (p = modinfo; p; p = next_tag_safe(p, &size)) {
+                        if (size > target_len && memcmp(p, target, target_len) == 0) {
+                                return p + target_len;
+                        }
+                }
+        }
+        return NULL;
 }
 /***************************find ko name（end）***********************/
 
@@ -368,6 +389,7 @@ bool check_ko_exist_in_hash_tbl(const char *filename)
 {
     u32 hash_key = jhash(filename, strlen(filename), 0);
     struct hash_tbl_node *entry;
+
     read_lock(&hashtable_lock);
     hash_for_each_possible(inte_hash_table, entry, node, hash_key) {
         if (strcmp(entry->filename, filename) == 0) {
@@ -383,6 +405,7 @@ bool check_ko_exist_in_hash_tbl_nolock(const char *filename)
 {
     u32 hash_key = jhash(filename, strlen(filename), 0);
     struct hash_tbl_node *entry;
+
     hash_for_each_possible(inte_hash_table, entry, node, hash_key) {
         if (strcmp(entry->filename, filename) == 0) {
             return true;
@@ -395,6 +418,7 @@ unsigned char *find_hash_by_name(const char *filename)
 {
     u32 hash_key = jhash(filename, strlen(filename), 0);
     struct hash_tbl_node *entry;
+
     read_lock(&hashtable_lock);
     hash_for_each_possible(inte_hash_table, entry, node, hash_key) {
         if (strcmp(entry->filename, filename) == 0) {
@@ -411,6 +435,17 @@ unsigned char *find_hash_by_name(const char *filename)
 static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
 {
     int ret = 0;
+    void *ptr;
+    struct load_info *info;
+    uint8_t hash[INTE_HASH_SIZE] = {0};
+    unsigned long remaining;
+    void *mod;
+    u64 start_ns;
+    char *ko_name;
+    char ko_name_with_suffix[FILENAME_LEN + 5];
+    unsigned char *init_hash;
+    SHASH_DESC_ON_STACK(desc, g_sha256_tfm);
+
     if (READ_ONCE(boot_stage) != BOOT_COMPLETE) {
         pr_info("[KERNEL_SECURITY_CHECK]: system boot, skip ko hash check.");
         return 0;
@@ -418,13 +453,14 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
     if (!pr) {
         return 0;
     }
+
     /* 补丁 4：保持 ARM64 的 regs[0] 取值 */
-    void *ptr = (void *)pr->regs[0];
+    ptr = (void *)pr->regs[0];
     if (!ptr) {
         pr_err_ratelimited("[KERNEL_SECURITY_CHECK]: Invalid ptr: pr->regs[0]");
         return 0;
     }
-    struct load_info *info = (struct load_info *)(ptr);
+    info = (struct load_info *)(ptr);
     if (!info || !info->hdr || !info->len) {
         pr_err_ratelimited("[KERNEL_SECURITY_CHECK]: Invalid load_info");
         return 0;
@@ -433,17 +469,17 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
         pr_err_ratelimited("[KERNEL_SECURITY_CHECK]: SHA256 tfm not ready\n");
         return 0;
     }
-    SHASH_DESC_ON_STACK(desc, g_sha256_tfm);
-    uint8_t hash[INTE_HASH_SIZE] = {0};
+
     desc->tfm = g_sha256_tfm;
     ret = crypto_shash_init(desc);
     if (ret) {
         pr_err("[KERNEL_SECURITY_CHECK]: Failed to initialize desc...");
         goto out_clean_desc;
     }
-    unsigned long remaining = info->len;
-    void *mod = info->hdr;
-    u64 start_ns = ktime_get_ns();
+
+    remaining = info->len;
+    mod = info->hdr;
+    start_ns = ktime_get_ns();
     while (remaining > 0) {
         unsigned long chunk = min_t(unsigned long, remaining, CHUNK_SIZE);
         ret = crypto_shash_update(desc, mod, chunk);
@@ -464,15 +500,14 @@ static int hash_probe_entry(struct kretprobe_instance *i, struct pt_regs *pr)
         pr_err("[KERNEL_SECURITY_CHECK]: Error: failed to compute hash!!!\n");
         goto out_clean_desc;
     }
-    char *ko_name = get_modinfo_name_safe(info);
+    ko_name = get_modinfo_name_safe(info);
     if (ko_name == NULL) {
         pr_err("[KERNEL_SECURITY_CHECK]: get ko name failed.\n");
         goto out_clean_desc;
     }
     pr_info("[KERNEL_SECURITY_CHECK]: ko_name is [%s].", ko_name);
-    char ko_name_with_suffix[FILENAME_LEN + 5];
     scnprintf(ko_name_with_suffix, sizeof(ko_name_with_suffix), "%s.ko", ko_name);
-    unsigned char *init_hash = find_hash_by_name(ko_name_with_suffix);
+    init_hash = find_hash_by_name(ko_name_with_suffix);
     if (init_hash == NULL) {
         pr_info("[KERNEL_SECURITY_CHECK]: ko:[%s] hash not found, maybe unknown ko.", ko_name_with_suffix);
         if (add_ko_event(ko_name_with_suffix)) {
@@ -502,11 +537,13 @@ static bool is_valid_sender(void)
 {
     struct task_struct *task = current;
     const char *expected_process = "oplus_kohashpro";
+    uint32_t euid;
+
     if (strcmp(task->comm, expected_process) != 0) {
         pr_err("[KERNEL_SECURITY_CHECK]:Invalid process: %s (expected: %s)\n", task->comm, expected_process);
         return false;
     }
-    uint32_t euid = __kuid_val(current->cred->euid);
+    euid = __kuid_val(current->cred->euid);
     if (euid != 1000) {
         pr_err("[KO_INTEGRITY_VERI):Invalid user, euid : [%u] \n", euid);
         return false;
@@ -583,8 +620,10 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
     struct hash_tbl_node *entry = NULL;
     u32 header_val;
     int ko_event_len;
+    int num_entries;
     int i;
     int ret = count;
+
     if (!is_valid_sender()) {
         pr_err("[KERNEL_SECURITY_CHECK]: Invalid sender process\n");
         return -EACCES;
@@ -622,7 +661,7 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
     // ==========================================
     //  Hash Entries
     // ==========================================
-    int num_entries = (int)header_val;
+    num_entries = (int)header_val;
     if (num_entries <= 0 || num_entries > MAX_ENTRIES) {
         pr_err("[KERNEL_SECURITY_CHECK]: Invalid number of entries: %d\n", num_entries);
         return -EINVAL;
@@ -642,6 +681,9 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
         return -EFAULT;
     }
     for (i = 0; i < num_entries; i++) {
+        u32 key;
+        u32 bucket;
+
         entry = kmalloc(sizeof(struct hash_tbl_node), GFP_KERNEL);
         if (!entry) {
             ret = -ENOMEM;
@@ -651,8 +693,8 @@ static ssize_t proc_write_ko(struct file *file, const char __user *buffer, size_
         strscpy(entry->filename, input_data[i].filename, FILENAME_LEN);
         normalize_mod_name(entry->filename);
         memcpy(entry->hash, input_data[i].hash, INTE_HASH_SIZE);
-        u32 key = jhash(entry->filename, strlen(entry->filename), 0);
-        u32 bucket = hash_min(key, INTE_HASH_BITS);
+        key = jhash(entry->filename, strlen(entry->filename), 0);
+        bucket = hash_min(key, INTE_HASH_BITS);
         write_lock(&hashtable_lock);
         if (check_ko_exist_in_hash_tbl_nolock(entry->filename)) {
             write_unlock(&hashtable_lock);
@@ -755,6 +797,11 @@ static const struct file_operations proc_fops_status = {
 static int __init __nocfi ko_integrity_init(void)
 {
     int ret = 0;
+    ksym_lookup_name look_func = NULL;
+    static struct kprobe getname_kp = {
+        .symbol_name = "kallsyms_lookup_name",
+    };
+
     rwlock_init(&hashtable_lock);
     rwlock_init(&ko_events_list_rwlock);
     rwlock_init(&systbl_events_list_rwlock);
@@ -779,6 +826,7 @@ static int __init __nocfi ko_integrity_init(void)
         goto proc_failed;
     }
     pr_info("[KERNEL_SECURITY_CHECK]: create /proc/inte_* succeed \n");
+
     /***************************resigter main hook ***********************/
     hash_probe.kp.symbol_name = "load_module";
     ret = register_kretprobe(&hash_probe);
@@ -787,10 +835,7 @@ static int __init __nocfi ko_integrity_init(void)
         goto proc_failed;
     }
     /***************************resigter main hook(end) ***********************/
-    ksym_lookup_name look_func = NULL;
-    static struct kprobe getname_kp = {
-        .symbol_name = "kallsyms_lookup_name",
-    };
+
     ret = register_kprobe(&getname_kp);
     /* 补丁 5：修改错误提示，指明可能被黑名单拦截 */
     if (ret < 0) {
@@ -827,6 +872,7 @@ static int __init __nocfi ko_integrity_init(void)
     hash_init(inte_hash_table);
     pr_info("[KERNEL_SECURITY_CHECK]:init success! , version :0.16\n");
     return ret;
+
 init_failed:
     if (g_sha256_tfm && !IS_ERR(g_sha256_tfm)) {
             crypto_free_shash(g_sha256_tfm);
@@ -851,6 +897,7 @@ static void __exit ko_integrity_exit(void)
     int i;
     struct hash_tbl_node *entry;
     struct hlist_node *tmp;
+
     cancel_delayed_work_sync(&check_work);
     unregister_kretprobe(&hash_probe);
     if (g_sha256_tfm) {
