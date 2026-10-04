@@ -115,16 +115,6 @@ jobs:
           echo 'echo ""' >> scripts/setlocalversion
           chmod +x scripts/setlocalversion
 
-      - name: Build Companion Module
-        run: |
-          if [ -f "./bk_build/build-module.sh" ]; then
-            echo "[*] Executing bk_build/build-module.sh..."
-            chmod +x ./bk_build/build-module.sh
-            ./bk_build/build-module.sh
-          else
-            echo "[!] Notice: bk_build/build-module.sh not found, skipping."
-          fi
-
       - name: Run Build Script
         run: |
           chmod +x build_kernel.sh
