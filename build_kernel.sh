@@ -567,18 +567,6 @@ build_target() {
         popd > /dev/null
         
         echo "[+] $OS_TYPE kernel binaries successfully packed into: $ZIP_FILENAME"
-
-        # Optional: package bkk-control companion module if present
-        if [ -d "bk_build/modules/bk-control" ]; then
-            echo "[*] Packaging bkk-control companion module..."
-            local BKK_ZIP_FILENAME="bkk-control-1.3_${DEVICE_NAME}_$(date +'%Y%m%d_%H%M%S').zip"
-            pushd bk_build/modules/bk-control > /dev/null
-            zip -r9 "../../../$BKK_ZIP_FILENAME" ./* -x .git .gitignore > /dev/null 2>&1 || true
-            popd > /dev/null
-            if [ -f "$BKK_ZIP_FILENAME" ]; then
-                echo "[+] bkk-control module package created: $BKK_ZIP_FILENAME"
-            fi
-        fi
     else
         echo "[-] $OS_TYPE Build Failed. Kernel Image not found."
         exit 1
