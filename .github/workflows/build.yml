@@ -15,7 +15,7 @@ on:
           - alioth
           - lmi
       ksu:
-        description: 'Enable KernelSU (ReSukiSU)'
+        description: 'Enable KernelSU (BakaSU)'
         required: true
         type: boolean
         default: true
