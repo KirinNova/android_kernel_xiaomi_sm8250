@@ -249,7 +249,7 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
     echo " [*] Initializing KernelSU  Setup"
     echo "==========================================="
     echo "[*] Downloading and running KernelSU remote setup script..."
-    curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
+    curl -LSs "https://raw.githubusercontent.com/KirinNova/HyperSU/builtin/kernel/setup.sh" | bash
     echo "[+] KernelSU setup finished."
 fi
 
