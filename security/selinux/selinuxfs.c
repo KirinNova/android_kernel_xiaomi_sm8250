@@ -616,12 +616,12 @@ static const struct file_operations sel_load_ops = {
 	.llseek		= generic_file_llseek,
 };
 
-static ssize_t sel_write_context(struct file *file, char *buf, size_t size)
+static ssize_t my_write_context(struct file *file, char *buf, size_t size)
 {
 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
 	struct selinux_state *state = fsi->state;
 	char *canon = NULL;
-	u32 sid, len;
+	u32 sid, len, tmp;
 	ssize_t length;
 
 	length = avc_has_perm(&selinux_state,
@@ -630,11 +630,15 @@ static ssize_t sel_write_context(struct file *file, char *buf, size_t size)
 	if (length)
 		goto out;
 
-	length = security_context_to_sid(state, buf, size, &sid, GFP_KERNEL);
-	if (length)
+	// apply to all app uids
+	length = security_context_to_sid(&fake_state, buf, size, &sid, GFP_KERNEL);
+	if (length) {
 		goto out;
-
-	length = security_sid_to_context(state, sid, &canon, &len);
+	} else {
+		// sync to global sidtab
+		security_context_to_sid(&selinux_state, buf, size, &tmp, GFP_KERNEL);
+	}
+	length = security_sid_to_context(&fake_state, sid, &canon, &len);
 	if (length)
 		goto out;
 
@@ -787,19 +791,20 @@ static const struct file_operations sel_transition_ops = {
 /*
  * Remaining nodes use transaction based IO methods like nfsd/nfsctl.c
  */
-static ssize_t sel_write_access(struct file *file, char *buf, size_t size);
-static ssize_t sel_write_create(struct file *file, char *buf, size_t size);
+static ssize_t my_write_access(struct file *file, char *buf, size_t size);
+static ssize_t my_write_create(struct file *file, char *buf, size_t size);
 static ssize_t sel_write_relabel(struct file *file, char *buf, size_t size);
 static ssize_t sel_write_user(struct file *file, char *buf, size_t size);
 static ssize_t sel_write_member(struct file *file, char *buf, size_t size);
+static ssize_t my_write_context(struct file *file, char *buf, size_t size);
 
 static ssize_t (*const write_op[])(struct file *, char *, size_t) = {
-	[SEL_ACCESS] = sel_write_access,
-	[SEL_CREATE] = sel_write_create,
+	[SEL_ACCESS] = my_write_access,
+	[SEL_CREATE] = my_write_create,
 	[SEL_RELABEL] = sel_write_relabel,
 	[SEL_USER] = sel_write_user,
 	[SEL_MEMBER] = sel_write_member,
-	[SEL_CONTEXT] = sel_write_context,
+	[SEL_CONTEXT] = my_write_context,
 };
 
 static ssize_t selinux_transaction_write(struct file *file, const char __user *buf, size_t size, loff_t *pos)
@@ -836,7 +841,7 @@ static const struct file_operations transaction_ops = {
  * and the length returned.  Otherwise return 0 or and -error.
  */
 
-static ssize_t sel_write_access(struct file *file, char *buf, size_t size)
+static ssize_t my_write_access(struct file *file, char *buf, size_t size)
 {
 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
 	struct selinux_state *state = fsi->state;
@@ -866,15 +871,15 @@ static ssize_t sel_write_access(struct file *file, char *buf, size_t size)
 	if (sscanf(buf, "%s %s %hu", scon, tcon, &tclass) != 3)
 		goto out;
 
-	length = security_context_str_to_sid(state, scon, &ssid, GFP_KERNEL);
+	length = security_context_str_to_sid(&fake_state, scon, &ssid, GFP_KERNEL);
 	if (length)
 		goto out;
 
-	length = security_context_str_to_sid(state, tcon, &tsid, GFP_KERNEL);
+	length = security_context_str_to_sid(&fake_state, tcon, &tsid, GFP_KERNEL);
 	if (length)
 		goto out;
 
-	security_compute_av_user(state, ssid, tsid, tclass, &avd);
+	security_compute_av_user(&fake_state, ssid, tsid, tclass, &avd);
 
 	length = scnprintf(buf, SIMPLE_TRANSACTION_LIMIT,
 			  "%x %x %x %x %u %x",
@@ -887,7 +892,7 @@ out:
 	return length;
 }
 
-static ssize_t sel_write_create(struct file *file, char *buf, size_t size)
+static ssize_t my_write_create(struct file *file, char *buf, size_t size)
 {
 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
 	struct selinux_state *state = fsi->state;
@@ -957,20 +962,20 @@ static ssize_t sel_write_create(struct file *file, char *buf, size_t size)
 		objname = namebuf;
 	}
 
-	length = security_context_str_to_sid(state, scon, &ssid, GFP_KERNEL);
+	length = security_context_str_to_sid(&fake_state, scon, &ssid, GFP_KERNEL);
 	if (length)
 		goto out;
 
-	length = security_context_str_to_sid(state, tcon, &tsid, GFP_KERNEL);
+	length = security_context_str_to_sid(&fake_state, tcon, &tsid, GFP_KERNEL);
 	if (length)
 		goto out;
 
-	length = security_transition_sid_user(state, ssid, tsid, tclass,
+	length = security_transition_sid_user(&fake_state, ssid, tsid, tclass,
 					      objname, &newsid);
 	if (length)
 		goto out;
 
-	length = security_sid_to_context(state, newsid, &newcon, &len);
+	length = security_sid_to_context(&fake_state, newsid, &newcon, &len);
 	if (length)
 		goto out;
 
