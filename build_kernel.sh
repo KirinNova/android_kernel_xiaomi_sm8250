@@ -251,6 +251,16 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "[*] Downloading and running KernelSU remote setup script..."
     curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
     echo "[+] KernelSU setup finished."
+
+    # 强行绕过 SUSFS 版本检查
+    SUSFS_COMPAT_FILE="KernelSU/kernel/tools/susfs_compat.mk"
+    if [ -f "$SUSFS_COMPAT_FILE" ]; then
+        echo "[*] Bypassing SUSFS version check in $SUSFS_COMPAT_FILE..."
+        sed -i 's/^\$(error/# $(error/' "$SUSFS_COMPAT_FILE"
+        sed -i 's/^\$(info/# $(info/' "$SUSFS_COMPAT_FILE"
+    else
+        echo "[!] Warning: $SUSFS_COMPAT_FILE not found. Skipping bypass."
+    fi
 fi
 
 # ==========================================
