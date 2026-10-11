@@ -103,6 +103,11 @@
 #include "audit.h"
 #include "avc_ss.h"
 
+#ifdef CONFIG_KSU_SUSFS
+extern struct selinux_state fake_state;
+extern bool ksu_selinux_hide_running;
+#endif
+
 struct selinux_state selinux_state;
 
 /* SECMARK reference count */
@@ -6333,7 +6338,7 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
     struct cred *new;
 #ifdef CONFIG_KSU_SUSFS
     int error, perm_error;
-    u32 mysid, sid;
+    u32 mysid, sid, ptsid;
 #else
     u32 mysid = current_sid(), sid = 0, ptsid;
     int error;
@@ -6428,8 +6433,9 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
     }
 
     new = prepare_creds();
-    if (!new)
+    if (!new) {
         return -ENOMEM;
+    }
 	/* Permission checking based on the specified context is
 	   performed during the actual operation (execve,
 	   open/mkdir/...), when we know the full context of the
