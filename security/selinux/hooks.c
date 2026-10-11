@@ -6158,251 +6158,278 @@ static int selinux_shm_shmat(struct kern_ipc_perm *shp,
 /* Semaphore security operations */
 static int selinux_sem_alloc_security(struct kern_ipc_perm *sma)
 {
-	struct ipc_security_struct *isec;
-	struct common_audit_data ad;
-	u32 sid = current_sid();
-	int rc;
+    struct ipc_security_struct *isec;
+    struct common_audit_data ad;
+    u32 sid = current_sid();
+    int rc;
 
-	isec = selinux_ipc(sma);
-	ipc_init_security(isec, SECCLASS_SEM);
+    isec = selinux_ipc(sma);
+    ipc_init_security(isec, SECCLASS_SEM);
 
-	ad.type = LSM_AUDIT_DATA_IPC;
-	ad.u.ipc_id = sma->key;
+    ad.type = LSM_AUDIT_DATA_IPC;
+    ad.u.ipc_id = sma->key;
 
-	rc = avc_has_perm(&selinux_state,
-			  sid, isec->sid, SECCLASS_SEM,
-			  SEM__CREATE, &ad);
-	return rc;
+    rc = avc_has_perm(&selinux_state,
+              sid, isec->sid, SECCLASS_SEM,
+              SEM__CREATE, &ad);
+    return rc;
 }
 
 static int selinux_sem_associate(struct kern_ipc_perm *sma, int semflg)
 {
-	struct ipc_security_struct *isec;
-	struct common_audit_data ad;
-	u32 sid = current_sid();
+    struct ipc_security_struct *isec;
+    struct common_audit_data ad;
+    u32 sid = current_sid();
 
-	isec = selinux_ipc(sma);
+    isec = selinux_ipc(sma);
 
-	ad.type = LSM_AUDIT_DATA_IPC;
-	ad.u.ipc_id = sma->key;
+    ad.type = LSM_AUDIT_DATA_IPC;
+    ad.u.ipc_id = sma->key;
 
-	return avc_has_perm(&selinux_state,
-			    sid, isec->sid, SECCLASS_SEM,
-			    SEM__ASSOCIATE, &ad);
+    return avc_has_perm(&selinux_state,
+                sid, isec->sid, SECCLASS_SEM,
+                SEM__ASSOCIATE, &ad);
 }
 
 /* Note, at this point, sma is locked down */
 static int selinux_sem_semctl(struct kern_ipc_perm *sma, int cmd)
 {
-	int err;
-	u32 perms;
+    int err;
+    u32 perms;
 
-	switch (cmd) {
-	case IPC_INFO:
-	case SEM_INFO:
-		/* No specific object, just general system-wide information. */
-		return avc_has_perm(&selinux_state,
-				    current_sid(), SECINITSID_KERNEL,
-				    SECCLASS_SYSTEM, SYSTEM__IPC_INFO, NULL);
-	case GETPID:
-	case GETNCNT:
-	case GETZCNT:
-		perms = SEM__GETATTR;
-		break;
-	case GETVAL:
-	case GETALL:
-		perms = SEM__READ;
-		break;
-	case SETVAL:
-	case SETALL:
-		perms = SEM__WRITE;
-		break;
-	case IPC_RMID:
-		perms = SEM__DESTROY;
-		break;
-	case IPC_SET:
-		perms = SEM__SETATTR;
-		break;
-	case IPC_STAT:
-	case SEM_STAT:
-	case SEM_STAT_ANY:
-		perms = SEM__GETATTR | SEM__ASSOCIATE;
-		break;
-	default:
-		return 0;
-	}
+    switch (cmd) {
+    case IPC_INFO:
+    case SEM_INFO:
+        /* No specific object, just general system-wide information. */
+        return avc_has_perm(&selinux_state,
+                    current_sid(), SECINITSID_KERNEL,
+                    SECCLASS_SYSTEM, SYSTEM__IPC_INFO, NULL);
+    case GETPID:
+    case GETNCNT:
+    case GETZCNT:
+        perms = SEM__GETATTR;
+        break;
+    case GETVAL:
+    case GETALL:
+        perms = SEM__READ;
+        break;
+    case SETVAL:
+    case SETALL:
+        perms = SEM__WRITE;
+        break;
+    case IPC_RMID:
+        perms = SEM__DESTROY;
+        break;
+    case IPC_SET:
+        perms = SEM__SETATTR;
+        break;
+    case IPC_STAT:
+    case SEM_STAT:
+    case SEM_STAT_ANY:
+        perms = SEM__GETATTR | SEM__ASSOCIATE;
+        break;
+    default:
+        return 0;
+    }
 
-	err = ipc_has_perm(sma, perms);
-	return err;
+    err = ipc_has_perm(sma, perms);
+    return err;
 }
 
 static int selinux_sem_semop(struct kern_ipc_perm *sma,
-			     struct sembuf *sops, unsigned nsops, int alter)
+                 struct sembuf *sops, unsigned nsops, int alter)
 {
-	u32 perms;
+    u32 perms;
 
-	if (alter)
-		perms = SEM__READ | SEM__WRITE;
-	else
-		perms = SEM__READ;
+    if (alter)
+        perms = SEM__READ | SEM__WRITE;
+    else
+        perms = SEM__READ;
 
-	return ipc_has_perm(sma, perms);
+    return ipc_has_perm(sma, perms);
 }
 
 static int selinux_ipc_permission(struct kern_ipc_perm *ipcp, short flag)
 {
-	u32 av = 0;
+    u32 av = 0;
 
-	av = 0;
-	if (flag & S_IRUGO)
-		av |= IPC__UNIX_READ;
-	if (flag & S_IWUGO)
-		av |= IPC__UNIX_WRITE;
+    av = 0;
+    if (flag & S_IRUGO)
+        av |= IPC__UNIX_READ;
+    if (flag & S_IWUGO)
+        av |= IPC__UNIX_WRITE;
 
-	if (av == 0)
-		return 0;
+    if (av == 0)
+        return 0;
 
-	return ipc_has_perm(ipcp, av);
+    return ipc_has_perm(ipcp, av);
 }
 
 static void selinux_ipc_getsecid(struct kern_ipc_perm *ipcp, u32 *secid)
 {
-	struct ipc_security_struct *isec = selinux_ipc(ipcp);
-	*secid = isec->sid;
+    struct ipc_security_struct *isec = selinux_ipc(ipcp);
+    *secid = isec->sid;
 }
 
 static void selinux_d_instantiate(struct dentry *dentry, struct inode *inode)
 {
-	if (inode)
-		inode_doinit_with_dentry(inode, dentry);
+    if (inode)
+        inode_doinit_with_dentry(inode, dentry);
 }
 
 static int selinux_getprocattr(struct task_struct *p,
-			       char *name, char **value)
+                    char *name, char **value)
 {
-	const struct task_security_struct *__tsec;
-	u32 sid;
-	int error;
-	unsigned len;
+    const struct task_security_struct *__tsec;
+    u32 sid;
+    int error;
+    unsigned len;
 
-	rcu_read_lock();
-	__tsec = selinux_cred(__task_cred(p));
+    rcu_read_lock();
+    __tsec = selinux_cred(__task_cred(p));
 
-	if (current != p) {
-		error = avc_has_perm(&selinux_state,
-				     current_sid(), __tsec->sid,
-				     SECCLASS_PROCESS, PROCESS__GETATTR, NULL);
-		if (error)
-			goto bad;
-	}
+    if (current != p) {
+        error = avc_has_perm(&selinux_state,
+                     current_sid(), __tsec->sid,
+                     SECCLASS_PROCESS, PROCESS__GETATTR, NULL);
+        if (error)
+            goto bad;
+    }
 
-	if (!strcmp(name, "current"))
-		sid = __tsec->sid;
-	else if (!strcmp(name, "prev"))
-		sid = __tsec->osid;
-	else if (!strcmp(name, "exec"))
-		sid = __tsec->exec_sid;
-	else if (!strcmp(name, "fscreate"))
-		sid = __tsec->create_sid;
-	else if (!strcmp(name, "keycreate"))
-		sid = __tsec->keycreate_sid;
-	else if (!strcmp(name, "sockcreate"))
-		sid = __tsec->sockcreate_sid;
-	else {
-		error = -EINVAL;
-		goto bad;
-	}
-	rcu_read_unlock();
+    if (!strcmp(name, "current"))
+        sid = __tsec->sid;
+    else if (!strcmp(name, "prev"))
+        sid = __tsec->osid;
+    else if (!strcmp(name, "exec"))
+        sid = __tsec->exec_sid;
+    else if (!strcmp(name, "fscreate"))
+        sid = __tsec->create_sid;
+    else if (!strcmp(name, "keycreate"))
+        sid = __tsec->keycreate_sid;
+    else if (!strcmp(name, "sockcreate"))
+        sid = __tsec->sockcreate_sid;
+    else {
+        error = -EINVAL;
+        goto bad;
+    }
+    rcu_read_unlock();
 
-	if (!sid)
-		return 0;
+    if (!sid)
+        return 0;
 
-	error = security_sid_to_context(&selinux_state, sid, value, &len);
-	if (error)
-		return error;
-	return len;
+    error = security_sid_to_context(&selinux_state, sid, value, &len);
+    if (error)
+        return error;
+    return len;
 
 bad:
-	rcu_read_unlock();
-	return error;
+    rcu_read_unlock();
+    return error;
 }
 
 static int selinux_setprocattr(const char *name, void *value, size_t size)
 {
-	struct task_security_struct *tsec;
-	struct cred *new;
-	u32 mysid = current_sid(), sid = 0, ptsid;
-	int error;
-	char *str = value;
+    struct task_security_struct *tsec;
+    struct cred *new;
+#ifdef CONFIG_KSU_SUSFS
+    int error, perm_error;
+    u32 mysid, sid;
+#else
+    u32 mysid = current_sid(), sid = 0, ptsid;
+    int error;
+#endif
+    char *str = value;
 
-	/*
-	 * Basic control over ability to set these attributes at all.
-	 */
-	if (!strcmp(name, "exec"))
-		error = avc_has_perm(&selinux_state,
-				     mysid, mysid, SECCLASS_PROCESS,
-				     PROCESS__SETEXEC, NULL);
-	else if (!strcmp(name, "fscreate"))
-		error = avc_has_perm(&selinux_state,
-				     mysid, mysid, SECCLASS_PROCESS,
-				     PROCESS__SETFSCREATE, NULL);
-	else if (!strcmp(name, "keycreate"))
-		error = avc_has_perm(&selinux_state,
-				     mysid, mysid, SECCLASS_PROCESS,
-				     PROCESS__SETKEYCREATE, NULL);
-	else if (!strcmp(name, "sockcreate"))
-		error = avc_has_perm(&selinux_state,
-				     mysid, mysid, SECCLASS_PROCESS,
-				     PROCESS__SETSOCKCREATE, NULL);
-	else if (!strcmp(name, "current"))
-		error = avc_has_perm(&selinux_state,
-				     mysid, mysid, SECCLASS_PROCESS,
-				     PROCESS__SETCURRENT, NULL);
-	else
-		error = -EINVAL;
-	if (error)
-		return error;
+#ifdef CONFIG_KSU_SUSFS
+    // apply to all app uids
+    if (likely(current_uid().val < 10000))
+        return selinux_setprocattr(name, value, size);
 
-	/* Obtain a SID for the context, if one was specified. */
-	if (size && str[0] && str[0] != '\n') {
-		if (str[size-1] == '\n') {
-			str[size-1] = 0;
-			size--;
-		}
-		error = security_context_to_sid(&selinux_state, value, size,
-						&sid, GFP_KERNEL);
-		if (error == -EINVAL && !strcmp(name, "fscreate")) {
-			if (!has_cap_mac_admin(true)) {
-				struct audit_buffer *ab;
-				size_t audit_size;
+    if (strcmp(name, "current"))
+        return selinux_setprocattr(name, value, size);
 
-				/* We strip a nul only if it is at the end, otherwise the
-				 * context contains a nul and we should audit that */
-				if (str[size - 1] == '\0')
-					audit_size = size - 1;
-				else
-					audit_size = size;
-				ab = audit_log_start(audit_context(),
-						     GFP_ATOMIC,
-						     AUDIT_SELINUX_ERR);
-				audit_log_format(ab, "op=fscreate invalid_context=");
-				audit_log_n_untrustedstring(ab, value, audit_size);
-				audit_log_end(ab);
+    if (unlikely(!ksu_selinux_hide_running))
+        return selinux_setprocattr(name, value, size);
+#endif
 
-				return error;
-			}
-			error = security_context_to_sid_force(
-						      &selinux_state,
-						      value, size, &sid);
-		}
-		if (error)
-			return error;
-	}
+    /*
+     * Basic control over ability to set these attributes at all.
+     */
+    if (!strcmp(name, "exec"))
+        error = avc_has_perm(&selinux_state,
+                     mysid, mysid, SECCLASS_PROCESS,
+                     PROCESS__SETEXEC, NULL);
+    else if (!strcmp(name, "fscreate"))
+        error = avc_has_perm(&selinux_state,
+                     mysid, mysid, SECCLASS_PROCESS,
+                     PROCESS__SETFSCREATE, NULL);
+    else if (!strcmp(name, "keycreate"))
+        error = avc_has_perm(&selinux_state,
+                     mysid, mysid, SECCLASS_PROCESS,
+                     PROCESS__SETKEYCREATE, NULL);
+    else if (!strcmp(name, "sockcreate"))
+        error = avc_has_perm(&selinux_state,
+                     mysid, mysid, SECCLASS_PROCESS,
+                     PROCESS__SETSOCKCREATE, NULL);
+    else if (!strcmp(name, "current"))
+        error = avc_has_perm(&selinux_state,
+                     mysid, mysid, SECCLASS_PROCESS,
+                     PROCESS__SETCURRENT, NULL);
+    else
+        error = -EINVAL;
+    if (error)
+        return error;
 
-	new = prepare_creds();
-	if (!new)
-		return -ENOMEM;
+    /* Obtain a SID for the context, if one was specified. */
+    if (size && str[0] && str[0] != '\n') {
+        if (str[size-1] == '\n') {
+            str[size-1] = 0;
+            size--;
+        }
+#ifdef CONFIG_KSU_SUSFS
+        error = security_context_to_sid(&fake_state, value, size,
+                                        &sid, GFP_KERNEL);
+        if (error) {
+            mysid = current_sid();
+            perm_error = avc_has_perm(&selinux_state, mysid, mysid, SECCLASS_PROCESS,
+                                      PROCESS__SETCURRENT, NULL);
+            return perm_error ?: error;
+        }
+#else
+        error = security_context_to_sid(&selinux_state, value, size,
+                        &sid, GFP_KERNEL);
+        if (error == -EINVAL && !strcmp(name, "fscreate")) {
+            if (!has_cap_mac_admin(true)) {
+                struct audit_buffer *ab;
+                size_t audit_size;
 
+                /* We strip a nul only if it is at the end, otherwise the
+                 * context contains a nul and we should audit that */
+                if (str[size - 1] == '\0')
+                    audit_size = size - 1;
+                else
+                    audit_size = size;
+                ab = audit_log_start(audit_context(),
+                            GFP_ATOMIC,
+                            AUDIT_SELINUX_ERR);
+                audit_log_format(ab, "op=fscreate invalid_context=");
+                audit_log_n_untrustedstring(ab, value, audit_size);
+                audit_log_end(ab);
+
+                return error;
+            }
+            error = security_context_to_sid_force(
+                        &selinux_state,
+                        value, size, &sid);
+        }
+        if (error)
+            return error;
+#endif
+    }
+
+    new = prepare_creds();
+    if (!new)
+        return -ENOMEM;
 	/* Permission checking based on the specified context is
 	   performed during the actual operation (execve,
 	   open/mkdir/...), when we know the full context of the
