@@ -43,6 +43,9 @@
 #include "objsec.h"
 #include "conditional.h"
 
+/* 声明外部 fake_state，用于应用进程的 SELinux 欺骗逻辑 */
+extern struct selinux_state fake_state;
+
 enum sel_inos {
 	SEL_ROOT_INO = 2,
 	SEL_LOAD,	/* load policy */
