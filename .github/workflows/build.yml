@@ -15,7 +15,7 @@ on:
           - alioth
           - lmi
       ksu:
-        description: 'Enable KernelSU (BakaSU)'
+        description: 'Enable KernelSU (HyperSU)'
         required: true
         type: boolean
         default: true
