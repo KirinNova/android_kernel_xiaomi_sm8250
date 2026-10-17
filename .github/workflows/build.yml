@@ -3,7 +3,7 @@ name: Build Kernel
 on:
   push:
     branches:
-      - android17-aptusitu
+      - HyperSU
   workflow_dispatch:
     inputs:
       device:
