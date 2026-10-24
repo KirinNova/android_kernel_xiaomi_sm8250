@@ -1743,6 +1743,14 @@ extern int ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename
 			void *envp, int *flags, int *retval);
 #endif
 
+#ifdef KSU_KSU_PRCTL
+extern int ksu_handle_prctl_fd(struct filename **filename_ptr, struct user_arg_ptr *argv_user);
+extern bool is_ksu_preinit_session(void);
+extern int ksu_handle_prctl_preinit(int *fd, struct filename **filename_ptr, struct user_arg_ptr *argv, struct user_arg_ptr *envp);
+extern int ksu_handle_prctl_post_execveat(int *fd, struct filename **filename_ptr,
+				   void *argv, void *envp, int *flags, int *retval);
+#endif
+
 static int __do_execve_file(int fd, struct filename *filename,
 			    struct user_arg_ptr argv,
 			    struct user_arg_ptr envp,
@@ -1756,9 +1764,21 @@ static int __do_execve_file(int fd, struct filename *filename,
 #ifdef CONFIG_KSU_SUSFS
 	bool is_su_session = false;
 #endif // #ifdef CONFIG_KSU_SUSFS
+#ifdef KSU_KSU_PRCTL
+	bool is_ku_handle_prctl_session = false;
+#endif // #ifdef KSU_KSU_PRCTL
 
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
+
+#ifdef KSU_KSU_PRCTL
+	if (is_ksu_preinit_session()) {
+		retval = ksu_handle_prctl_preinit(&fd, &filename, &argv, &envp);
+		if (retval)
+			return retval;
+	}
+#endif // #ifdef KSU_KSU_PRCTL
+
 #ifdef CONFIG_KSU_SUSFS
 	if (likely(susfs_is_current_proc_no_su()))
 		goto orig_flow;
@@ -1769,8 +1789,8 @@ static int __do_execve_file(int fd, struct filename *filename,
 		else
 			is_su_session = !ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
 	}
-orig_flow:
 #endif
+orig_flow:
 
 	/*
 	 * We move the actual failure in case of RLIMIT_NPROC excess from
@@ -1811,6 +1831,15 @@ orig_flow:
 		goto out_unmark;
 
 	sched_exec();
+
+#ifdef KSU_KSU_PRCTL
+	if (is_ku_handle_prctl_session) {
+		if (fd == AT_FDCWD || flags & AT_EMPTY_PATH) {
+			is_ku_handle_prctl_session = false;
+			goto orig_flow;
+		}
+	}
+#endif // #ifdef KSU_KSU_PRCTL
 
 	bprm->file = file;
 	if (!filename) {
@@ -1917,6 +1946,10 @@ out_unmark:
 	if (unlikely(is_su_session))
 		(void)ksu_handle_post_execveat_sucompat(&fd, &filename, &argv, &envp, &flags, &retval);
 #endif // #ifdef CONFIG_KSU_SUSFS
+#ifdef KSU_KSU_PRCTL
+	if (unlikely(is_ku_handle_prctl_session))
+		(void)ksu_handle_prctl_post_execveat(&fd, &filename, &argv, &envp, &flags, &retval);
+#endif // #ifdef KSU_KSU_PRCTL
 
 out_free:
 	free_bprm(bprm);
