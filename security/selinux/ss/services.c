@@ -69,6 +69,13 @@
 #include "ebitmap.h"
 #include "audit.h"
 
+#ifdef CONFIG_KSU_SUSFS
+extern struct selinux_state fake_state;
+extern bool ksu_selinux_hide_running;
+extern bool ksu_selinux_hide_enabled;
+#define should_check_current (likely(current_uid().val >= 10000 && ksu_selinux_hide_running))
+#endif
+
 /* Policy capability names */
 const char *selinux_policycap_names[__POLICYDB_CAPABILITY_MAX] = {
 	"network_peer_controls",
@@ -100,6 +107,16 @@ static void context_struct_compute_av(struct policydb *policydb,
 				      u16 tclass,
 				      struct av_decision *avd,
 				      struct extended_perms *xperms);
+
+#ifdef CONFIG_KSU_SUSFS
+static int my_security_context_to_sid_core(struct selinux_state *state,
+					   const char *scontext, u32 scontext_len,
+					   u32 *sid, u32 def_sid, gfp_t gfp_flags,
+					   int force);
+static int my_security_context_to_sid(struct selinux_state *state,
+				      const char *scontext, u32 scontext_len,
+				      u32 *sid, gfp_t gfp);
+#endif
 
 static int selinux_set_mapping(struct policydb *pol,
 			       struct security_class_mapping *map,
@@ -1537,6 +1554,17 @@ static int security_context_to_sid_core(struct selinux_state *state,
 		if (!str)
 			goto out;
 	}
+
+#ifdef CONFIG_KSU_SUSFS
+bypass_orig_flow1:
+	if (should_check_current) {
+		rc = my_security_context_to_sid(&fake_state, scontext, scontext_len, sid, gfp_flags);
+		if (rc)
+			goto out;
+		goto bypass_orig_flow2;
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 	read_lock(&state->ss->policy_rwlock);
 	policydb = &state->ss->policydb;
 	sidtab = state->ss->sidtab;
@@ -1552,6 +1580,9 @@ static int security_context_to_sid_core(struct selinux_state *state,
 	context_destroy(&context);
 out_unlock:
 	read_unlock(&state->ss->policy_rwlock);
+#ifdef CONFIG_KSU_SUSFS
+bypass_orig_flow2:
+#endif
 out:
 	kfree(scontext2);
 	kfree(str);
@@ -1584,6 +1615,91 @@ int security_context_str_to_sid(struct selinux_state *state,
 	return security_context_to_sid(state, scontext, strlen(scontext),
 				       sid, gfp);
 }
+
+#ifdef CONFIG_KSU_SUSFS
+static int my_security_context_to_sid_core(struct selinux_state *state,
+					   const char *scontext, u32 scontext_len,
+					   u32 *sid, u32 def_sid, gfp_t gfp_flags,
+					   int force)
+{
+	struct policydb *policydb;
+	struct sidtab *sidtab;
+	char *scontext2, *str = NULL;
+	struct context context;
+	int rc = 0;
+
+	/* An empty security context is never valid. */
+	if (!scontext_len)
+		return -EINVAL;
+
+	/* Copy the string to allow changes and ensure a NUL terminator */
+	scontext2 = kmemdup_nul(scontext, scontext_len, gfp_flags);
+	if (!scontext2)
+		return -ENOMEM;
+
+	if (!selinux_initialized(state)) {
+		int i;
+
+		for (i = 1; i < SECINITSID_NUM; i++) {
+			if (!strcmp(initial_sid_to_string[i], scontext2)) {
+				*sid = i;
+				goto out;
+			}
+		}
+		*sid = SECINITSID_KERNEL;
+		goto out;
+	}
+	*sid = SECSID_NULL;
+
+	if (force) {
+		/* Save another copy for storing in uninterpreted form */
+		rc = -ENOMEM;
+		str = kstrdup(scontext2, gfp_flags);
+		if (!str)
+			goto out;
+	}
+	read_lock(&state->ss->policy_rwlock);
+	policydb = &state->ss->policydb;
+	sidtab = state->ss->sidtab;
+	rc = string_to_context_struct(policydb, sidtab, scontext2,
+				      &context, def_sid);
+	if (rc == -EINVAL && force) {
+		context.str = str;
+		context.len = strlen(str) + 1;
+		str = NULL;
+	} else if (rc)
+		goto out_unlock;
+	rc = context_struct_to_sid(state, &context, sid);
+	context_destroy(&context);
+out_unlock:
+	read_unlock(&state->ss->policy_rwlock);
+out:
+	kfree(scontext2);
+	kfree(str);
+	return rc;
+}
+
+static int my_security_context_to_sid(struct selinux_state *state,
+				      const char *scontext, u32 scontext_len,
+				      u32 *sid, gfp_t gfp)
+{
+	if (likely(!should_check_current)) {
+		return security_context_to_sid(state, scontext, scontext_len, sid, gfp);
+	}
+	return my_security_context_to_sid_core(state, scontext, scontext_len,
+					       sid, SECSID_NULL, gfp, 0);
+}
+
+int my_security_context_str_to_sid(struct selinux_state *state,
+				   const char *scontext, u32 *sid, gfp_t gfp)
+{
+	if (likely(!should_check_current)) {
+		return security_context_str_to_sid(state, scontext, sid, gfp);
+	}
+	return my_security_context_to_sid(state, scontext, strlen(scontext),
+					  sid, gfp);
+}
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 /**
  * security_context_to_sid_default - Obtain a SID for a given security context,
