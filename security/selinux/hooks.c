@@ -7420,5 +7420,3 @@ int selinux_disable(struct selinux_state *state)
 	return 0;
 }
 #endif
-
-
