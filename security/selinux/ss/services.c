@@ -113,9 +113,10 @@ static int my_security_context_to_sid_core(struct selinux_state *state,
 					   const char *scontext, u32 scontext_len,
 					   u32 *sid, u32 def_sid, gfp_t gfp_flags,
 					   int force);
-static int my_security_context_to_sid(struct selinux_state *state,
-				      const char *scontext, u32 scontext_len,
-				      u32 *sid, gfp_t gfp);
+/* FIXED: 去掉 static，与 selinuxfs.c / hooks.c 中的 extern 声明匹配 */
+int my_security_context_to_sid(struct selinux_state *state,
+			       const char *scontext, u32 scontext_len,
+			       u32 *sid, gfp_t gfp);
 #endif
 
 static int selinux_set_mapping(struct policydb *pol,
@@ -1673,9 +1674,10 @@ out:
 	return rc;
 }
 
-static int my_security_context_to_sid(struct selinux_state *state,
-				      const char *scontext, u32 scontext_len,
-				      u32 *sid, gfp_t gfp)
+/* FIXED: 去掉 static，让 selinuxfs.c / hooks.c 能链接到本符号 */
+int my_security_context_to_sid(struct selinux_state *state,
+			       const char *scontext, u32 scontext_len,
+			       u32 *sid, gfp_t gfp)
 {
 	if (likely(!should_check_current)) {
 		return security_context_to_sid(state, scontext, scontext_len, sid, gfp);
