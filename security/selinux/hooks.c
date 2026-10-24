@@ -109,6 +109,10 @@ struct selinux_state selinux_state;
 extern struct selinux_state fake_state;
 extern bool ksu_selinux_hide_running;
 extern bool ksu_selinux_hide_enabled;
+extern int my_security_context_to_sid(struct selinux_state *state,
+				      const char *scontext, u32 scontext_len, u32 *sid,
+				      gfp_t gfp);
+extern int my_setprocattr(const char *name, void *value, size_t size);
 #endif
 
 /* SECMARK reference count */
@@ -6341,12 +6345,6 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 	int error;
 	char *str = value;
 
-#ifdef CONFIG_KSU_SUSFS
-	bool should_check_current = (likely(!strcmp(name, "current")) &&
-				current_uid().val >= 10000 &&
-				ksu_selinux_hide_running);
-#endif
-
 	/*
 	 * Basic control over ability to set these attributes at all.
 	 */
@@ -6403,15 +6401,9 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 
 				return error;
 			}
-#ifdef CONFIG_KSU_SUSFS
-			error = security_context_to_sid(&fake_state, value, size, &sid, GFP_KERNEL);
-			if (error)
-				return error;
-#else
 			error = security_context_to_sid_force(
 						      &selinux_state,
 						      value, size, &sid);
-#endif // #ifdef CONFIG_KSU_SUSFS
 		}
 		if (error)
 			return error;
@@ -6446,17 +6438,6 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
 		error = -EINVAL;
 		if (sid == 0)
 			goto abort_change;
-
-#ifdef CONFIG_KSU_SUSFS
-		if (should_check_current) {
-			u32 tmp_sid = 0;
-			int fake_error = security_context_to_sid(&fake_state, value, size, &tmp_sid,
-							 GFP_KERNEL);
-
-			if (fake_error)
-				return fake_error;
-		}
-#endif
 
 		/* Only allow single threaded processes to change context */
 		error = -EPERM;
@@ -6533,6 +6514,26 @@ static int my_setprocattr(const char *name, void *value, size_t size)
 			return error;
 	}
 
+	return selinux_setprocattr(name, value, size);
+}
+
+static int handle_selinux_setprocattr(const char *name, void *value, size_t size)
+{
+	u32 sid = 0;
+	int error;
+	char *str = value;
+
+	if (likely(!strcmp(name, "current") &&
+		   current_uid().val >= 10000 &&
+		   ksu_selinux_hide_running)) {
+		error = my_security_context_to_sid(&selinux_state, value, size, &sid, GFP_KERNEL);
+		if (error)
+			return error;
+		goto bypass_orig_flow;
+	}
+	return my_setprocattr(name, value, size);
+
+bypass_orig_flow:
 	return selinux_setprocattr(name, value, size);
 }
 #endif // #ifdef CONFIG_KSU_SUSFS
@@ -7085,7 +7086,7 @@ static struct security_hook_list selinux_hooks[] __lsm_ro_after_init = {
 
 	LSM_HOOK_INIT(getprocattr, selinux_getprocattr),
 #ifdef CONFIG_KSU_SUSFS
-	LSM_HOOK_INIT(setprocattr, my_setprocattr),
+	LSM_HOOK_INIT(setprocattr, handle_selinux_setprocattr),
 #else
 	LSM_HOOK_INIT(setprocattr, selinux_setprocattr),
 #endif // #ifdef CONFIG_KSU_SUSFS
