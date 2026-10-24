@@ -55,8 +55,6 @@ extern int my_security_context_to_sid(struct selinux_state *state,
 				      gfp_t gfp);
 extern int my_security_context_str_to_sid(struct selinux_state *state,
 					  const char *scontext, u32 *sid, gfp_t gfp);
-extern ssize_t my_sel_write_context(struct file *file, char *buf, size_t size);
-extern ssize_t my_sel_write_access(struct file *file, char *buf, size_t size);
 #endif
 
 enum sel_inos {
@@ -657,11 +655,23 @@ static ssize_t sel_write_context(struct file *file, char *buf, size_t size)
 	u32 sid, len;
 	ssize_t length;
 
+#ifdef CONFIG_KSU_SUSFS
+	bool should_check_current = (likely(current_uid().val >= 10000 && ksu_selinux_hide_running));
+#endif
+
 	length = avc_has_perm(&selinux_state,
 			      current_sid(), SECINITSID_SECURITY,
 			      SECCLASS_SECURITY, SECURITY__CHECK_CONTEXT, NULL);
 	if (length)
 		goto out;
+
+#ifdef CONFIG_KSU_SUSFS
+	if (should_check_current) {
+		length = security_context_to_sid(&fake_state, buf, size, &sid, GFP_KERNEL);
+		if (length)
+			goto out;
+	}
+#endif
 
 	length = security_context_to_sid(state, buf, size, &sid, GFP_KERNEL);
 	if (length)
@@ -868,6 +878,7 @@ static const struct file_operations sel_transition_ops = {
 static ssize_t sel_write_access(struct file *file, char *buf, size_t size);
 #ifdef CONFIG_KSU_SUSFS
 static ssize_t my_sel_write_access(struct file *file, char *buf, size_t size);
+static ssize_t my_sel_write_context(struct file *file, char *buf, size_t size);
 #endif
 static ssize_t sel_write_create(struct file *file, char *buf, size_t size);
 static ssize_t sel_write_relabel(struct file *file, char *buf, size_t size);
@@ -935,6 +946,10 @@ static ssize_t sel_write_access(struct file *file, char *buf, size_t size)
 	struct av_decision avd;
 	ssize_t length;
 
+#ifdef CONFIG_KSU_SUSFS
+	bool should_check_current = (likely(current_uid().val >= 10000 && ksu_selinux_hide_running));
+#endif
+
 	length = avc_has_perm(&selinux_state,
 			      current_sid(), SECINITSID_SECURITY,
 			      SECCLASS_SECURITY, SECURITY__COMPUTE_AV, NULL);
@@ -954,6 +969,17 @@ static ssize_t sel_write_access(struct file *file, char *buf, size_t size)
 	length = -EINVAL;
 	if (sscanf(buf, "%s %s %hu", scon, tcon, &tclass) != 3)
 		goto out;
+
+#ifdef CONFIG_KSU_SUSFS
+	if (should_check_current) {
+		length = security_context_str_to_sid(&fake_state, scon, &ssid, GFP_KERNEL);
+		if (length)
+			goto out;
+		length = security_context_str_to_sid(&fake_state, tcon, &tsid, GFP_KERNEL);
+		if (length)
+			goto out;
+	}
+#endif
 
 	length = security_context_str_to_sid(state, scon, &ssid, GFP_KERNEL);
 	if (length)
