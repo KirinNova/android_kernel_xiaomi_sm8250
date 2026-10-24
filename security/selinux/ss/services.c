@@ -1556,12 +1556,9 @@ static int security_context_to_sid_core(struct selinux_state *state,
 	}
 
 #ifdef CONFIG_KSU_SUSFS
-bypass_orig_flow1:
 	if (should_check_current) {
 		rc = my_security_context_to_sid(&fake_state, scontext, scontext_len, sid, gfp_flags);
-		if (rc)
-			goto out;
-		goto bypass_orig_flow2;
+		goto out;
 	}
 #endif // #ifdef CONFIG_KSU_SUSFS
 
@@ -1580,9 +1577,6 @@ bypass_orig_flow1:
 	context_destroy(&context);
 out_unlock:
 	read_unlock(&state->ss->policy_rwlock);
-#ifdef CONFIG_KSU_SUSFS
-bypass_orig_flow2:
-#endif
 out:
 	kfree(scontext2);
 	kfree(str);
