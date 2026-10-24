@@ -109,6 +109,11 @@ struct selinux_state selinux_state;
 extern struct selinux_state fake_state;
 extern bool ksu_selinux_hide_running;
 extern bool ksu_selinux_hide_enabled;
+/*
+ * SUSFS: my_setprocattr() now lives in the KernelSU side
+ * (selinux_hide.c) and is exported, so the kernel only dispatches to it.
+ */
+extern int my_setprocattr(const char *name, void *value, size_t size);
 #endif
 
 /* SECMARK reference count */
@@ -6500,39 +6505,17 @@ abort_change:
 }
 
 #ifdef CONFIG_KSU_SUSFS
-static int my_setprocattr(const char *name, void *value, size_t size)
+/*
+ * SUSFS: dispatch between the KernelSU-provided hook and the stock
+ * SELinux implementation. The former my_setprocattr() body moved to
+ * KernelSU's selinux_hide.c so it can be reused by upstream code.
+ */
+static int handle_selinux_setprocattr(const char *name, void *value, size_t size)
 {
-	u32 mysid = current_sid(), sid = 0;
-	int error;
-	char *str = value;
-
-	// apply to all app uids
-	if (likely(current_uid().val < 10000 ||
-	    !ksu_selinux_hide_running ||
-	    strcmp(name, "current")))
-		return selinux_setprocattr(name, value, size);
-
-	error = avc_has_perm(&selinux_state,
-	    mysid, mysid, SECCLASS_PROCESS,
-	    PROCESS__SETCURRENT, NULL);
-
-	if (error)
-		return error;
-
-	/* Obtain a SID for the context, if one was specified. */
-	if (size && str[0] && str[0] != '\n') {
-		if (str[size-1] == '\n') {
-			str[size-1] = 0;
-			size--;
-		}
-
-		error = security_context_to_sid(&fake_state, value, size,
-						&sid, GFP_KERNEL);
-
-		if (error)
-			return error;
-	}
-
+	if (likely(!strcmp(name, "current") &&
+		   current_uid().val >= 10000 &&
+		   ksu_selinux_hide_running))
+		return my_setprocattr(name, value, size);
 	return selinux_setprocattr(name, value, size);
 }
 #endif // #ifdef CONFIG_KSU_SUSFS
@@ -7085,7 +7068,7 @@ static struct security_hook_list selinux_hooks[] __lsm_ro_after_init = {
 
 	LSM_HOOK_INIT(getprocattr, selinux_getprocattr),
 #ifdef CONFIG_KSU_SUSFS
-	LSM_HOOK_INIT(setprocattr, my_setprocattr),
+	LSM_HOOK_INIT(setprocattr, handle_selinux_setprocattr),
 #else
 	LSM_HOOK_INIT(setprocattr, selinux_setprocattr),
 #endif // #ifdef CONFIG_KSU_SUSFS
