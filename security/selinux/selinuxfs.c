@@ -48,7 +48,6 @@ extern bool ksu_selinux_hide_running;
 extern bool ksu_selinux_hide_enabled;
 extern struct page *fake_status;
 extern void initialize_fake_status(void);
-extern struct static_key_false fake_status_initialize_key;
 /* defined in drivers/kernelsu/feature/selinux_hide.c */
 extern ssize_t my_write_context(struct file *file, char *buf, size_t size);
 extern ssize_t my_write_access(struct file *file, char *buf, size_t size);
@@ -267,13 +266,14 @@ static int sel_open_handle_status(struct inode *inode, struct file *filp)
 	filp->private_data = status;
 
 #ifdef CONFIG_KSU_SUSFS
-	if (static_branch_unlikely(&fake_status_initialize_key)) {
-		if (!fake_status)
-			initialize_fake_status();
-	}
+	/* late initialisation once the policy is loaded (handled by KernelSU) */
+	if (!fake_status)
+		initialize_fake_status();
 #endif // #ifdef CONFIG_KSU_SUSFS
 	return 0;
-}static ssize_t sel_read_handle_status(struct file *filp, char __user *buf,
+}
+
+static ssize_t sel_read_handle_status(struct file *filp, char __user *buf,
 				      size_t count, loff_t *ppos)
 {
 	struct page    *status = filp->private_data;
