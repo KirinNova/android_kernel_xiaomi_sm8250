@@ -14231,6 +14231,17 @@ int8_t csr_get_cfg_max_tx_power(struct mac_context *mac, uint32_t ch_freq)
 		return maxTxPwr;
 	}
 
+	/*
+	 * If max_tx_power_5 / max_tx_power_24 was never configured in the INI
+	 * the stored length is zero.  qdf_mem_malloc(0) returns NULL and logs
+	 * "Cannot malloc 0 bytes" as an error on every call, which showed up on
+	 * each Wi-Fi Direct connect.  There is nothing to parse in that case and
+	 * maxTxPwr keeps its default, so return it directly instead of taking
+	 * the allocation failure path.
+	 */
+	if (!cfg_length)
+		return maxTxPwr;
+
 	pCountryInfo = qdf_mem_malloc(cfg_length);
 	if (!pCountryInfo)
 		goto error;
