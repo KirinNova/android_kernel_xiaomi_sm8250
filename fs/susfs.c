@@ -1467,8 +1467,10 @@ void susfs_set_priority_uid_filter(void __user **user_info) {
 	mutex_unlock(&susfs_mutex_lock_priority_uid_filter);
 
 	/* kfree_call_rcu() in 4.19 does not tolerate a NULL head */
-	if (old_bitmap)
+	if (old_bitmap) {
+		synchronize_rcu();
 		kfree_rcu(old_bitmap, rcu);
+	}
 
 	SUSFS_LOGI("the priority uid filter is set\n");
 	err = 0;
@@ -1543,8 +1545,10 @@ static int susfs_priority_app_strings_worker(void *data) {
 	mutex_unlock(&susfs_mutex_lock_priority_uid_filter);
 
 	/* kfree_call_rcu() in 4.19 does not tolerate a NULL head */
-	if (old_bitmap)
+	if (old_bitmap) {
+		synchronize_rcu();
 		kfree_rcu(old_bitmap, rcu);
+	}
 
 	SUSFS_LOGI("the uids of the priority uid filter are resolved again\n");
 
