@@ -31,6 +31,7 @@
 #include <linux/audit.h>
 #include <linux/uaccess.h>
 #include <linux/kobject.h>
+#include <linux/susfs.h>
 #include <linux/ctype.h>
 
 /* selinuxfs pseudo filesystem for exporting the security policy API.
