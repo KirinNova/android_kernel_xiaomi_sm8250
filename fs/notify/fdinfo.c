@@ -91,11 +91,11 @@ static void show_mark_fhandle(struct seq_file *m, struct inode *inode)
 
 #ifdef CONFIG_INOTIFY_USER
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+#if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_SUS_KSTAT)
 static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark, struct file *file)
 #else
 static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
-#endif
+#endif // #if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_SUS_KSTAT)
 {
 	struct inotify_inode_mark *inode_mark;
 	struct inode *inode;
@@ -177,7 +177,11 @@ void inotify_show_fdinfo(struct seq_file *m, struct file *f)
 
 #ifdef CONFIG_FANOTIFY
 
+#if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_SUS_KSTAT)
+static void fanotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark, struct file *file)
+#else
 static void fanotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
+#endif // #if defined(CONFIG_KSU_SUSFS_SUS_MOUNT) || defined(CONFIG_KSU_SUSFS_SUS_KSTAT)
 {
 	unsigned int mflags = 0;
 	struct inode *inode;
