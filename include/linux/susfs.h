@@ -240,6 +240,16 @@ void susfs_set_priority_uid_filter(void __user **user_info);
 void susfs_parse_priority_app_strings(void);
 bool susfs_is_priority_uid_filtered(uid_t uid);
 
+/* sus_type - records type values hidden by ksu_type() */
+int susfs_add_sus_type(const char *secctx, u32 type_value);
+bool susfs_is_sus_type_rcu(u32 type_value);
+
+/* avd_allowed - restores the original avd->allowed recorded by ksu_allow() */
+int susfs_add_sus_avd_allowed_by_type(u32 s_type, u32 t_type, u32 c_type,
+				      u32 orig_avd_allowed);
+void susfs_spoof_avd_allowed_rcu(u32 s_type, u32 t_type, u32 c_type,
+				 u32 *avd_allowed);
+
 void susfs_set_avc_log_spoofing(void __user **user_info);
 
 void susfs_get_enabled_features(void __user **user_info);
