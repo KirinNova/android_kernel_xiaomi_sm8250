@@ -256,9 +256,9 @@ configure_droidspaces_non_gki() {
 # ==========================================
 if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "==========================================="
-    echo " [*] Initializing KernelSU (ReSukiSU) Setup"
+    echo " [*] Initializing KernelSU (BakaSU) Setup"
     echo "==========================================="
-    echo "[*] Downloading and running ReSukiSU remote setup script..."
+    echo "[*] Downloading and running BakaSU remote setup script..."
     curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
     echo "[+] KernelSU setup finished."
 fi
@@ -488,7 +488,7 @@ build_target() {
         
         local KSU_ZIP_STR="NoKernelSU"
         if [ "$ENABLE_KSU" -eq 1 ]; then
-            KSU_ZIP_STR="ReSukiSU-SuSFS"
+            KSU_ZIP_STR="BakaSU-SuSFS"
         fi
         local GIT_COMMIT_ID=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
         local OS_UPPER=$(echo "$OS_TYPE" | tr '[:lower:]' '[:upper:]')
