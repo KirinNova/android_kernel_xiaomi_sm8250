@@ -52,6 +52,9 @@
 #include <linux/flex_array.h>
 #include <linux/vmalloc.h>
 #include <net/netlabel.h>
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 #include "flask.h"
 #include "avc.h"
@@ -1208,6 +1211,17 @@ void security_compute_av_user(struct selinux_state *state,
 
 	context_struct_compute_av(policydb, scontext, tcontext, tclass, avd,
 				  NULL);
+#ifdef CONFIG_KSU_SUSFS
+	/*
+	 * Upstream holds rcu_read_lock() across this path; 4.19 takes the
+	 * policy rwlock instead, so open an RCU read section for the hlist
+	 * walk done by susfs_spoof_avd_allowed_rcu().
+	 */
+	rcu_read_lock();
+	susfs_spoof_avd_allowed_rcu(scontext->type, tcontext->type, tclass,
+				    &avd->allowed);
+	rcu_read_unlock();
+#endif // #ifdef CONFIG_KSU_SUSFS
  out:
 	read_unlock(&state->ss->policy_rwlock);
 	return;
@@ -1442,6 +1456,17 @@ static int string_to_context_struct(struct policydb *pol,
 	typdatum = hashtab_search(pol->p_types.table, scontextp);
 	if (!typdatum || typdatum->attribute)
 		goto out;
+
+#ifdef CONFIG_KSU_SUSFS
+	/*
+	 * Refuse to resolve a hidden sus type into a context: an app probing
+	 * for a sus context name has to get -EINVAL, exactly as it would for
+	 * a name that does not exist in the policy.  Caller holds
+	 * rcu_read_lock(), which the _rcu hlist walk inside requires.
+	 */
+	if (unlikely(susfs_is_sus_type_rcu(typdatum->value)))
+		goto out;
+#endif // #ifdef CONFIG_KSU_SUSFS
 
 	ctx->type = typdatum->value;
 

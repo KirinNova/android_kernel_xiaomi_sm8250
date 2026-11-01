@@ -22,6 +22,7 @@
 #include <linux/jump_label.h>
 #include <linux/version.h> // We need check kernel version.
 #include <linux/security.h>
+#include <linux/hash.h>
 #include <linux/susfs.h>
 #include "fuse/fuse_i.h"
 #include "mount.h"
@@ -46,28 +47,25 @@ static DEFINE_MUTEX(susfs_mutex_lock_sus_type);
 static DEFINE_HASHTABLE(SUS_TYPE_HLIST, 10);
 
 struct st_susfs_sus_type_hlist {
-	struct hlist_node 	node;
-	u32			type_value;
+	struct hlist_node			node;
+	u32					type_value;
 };
 
-int susfs_add_sus_type(struct st_susfs_sus_type __user *user_info) {
-	struct st_susfs_sus_type info = {0};
+int susfs_add_sus_type(const char *secctx, u32 type_value) {
 	struct st_susfs_sus_type_hlist *new_entry, *tmp_entry;
 	struct hlist_node *tmp_hlist_node;
 	int err = 0;
 
-	if (copy_from_user(&info, user_info, sizeof(info))) {
-		info.err = -EFAULT;
-		goto out_copy_to_user;
-	}
-
 	mutex_lock(&susfs_mutex_lock_sus_type);
-	hash_for_each_possible_safe(SUS_TYPE_HLIST, tmp_entry, tmp_hlist_node, node, info.type_value) {
-		if (tmp_entry->type_value == info.type_value) {
-			SUSFS_LOGE("type_value: '%u', was added before already\n", info.type_value);
-			err = -EINVAL;
-			goto unlock;
-		}
+	hash_for_each_possible_safe(SUS_TYPE_HLIST, tmp_entry, tmp_hlist_node, node, type_value) {
+		/* hash_for_each_possible walks the whole bucket, not just the
+		 * matching key, so compare the stored value explicitly */
+		if (tmp_entry->type_value != type_value)
+			continue;
+		SUSFS_LOGE("secctx '%s', type_value '%u', was added before already\n",
+			secctx, type_value);
+		err = -EINVAL;
+		goto unlock;
 	}
 
 	new_entry = kzalloc(sizeof(struct st_susfs_sus_type_hlist), GFP_KERNEL);
@@ -76,120 +74,116 @@ int susfs_add_sus_type(struct st_susfs_sus_type __user *user_info) {
 		goto unlock;
 	}
 
-	new_entry->type_value = info.type_value;
-	hash_add_rcu(SUS_TYPE_HLIST, &new_entry->node, info.type_value);
-	SUSFS_LOGI("type_value: '%u', has been added to SUS_TYPE_HLIST\n", info.type_value);
-
+	new_entry->type_value = type_value;
+	hash_add_rcu(SUS_TYPE_HLIST, &new_entry->node, type_value);
+	SUSFS_LOGI("secctx '%s', type '%u', has been added to SUS_TYPE_HLIST\n",
+					secctx, type_value);
 unlock:
 	mutex_unlock(&susfs_mutex_lock_sus_type);
-	info.err = err;
-
-out_copy_to_user:
-	if (copy_to_user(&(user_info->err), &info.err, sizeof(info.err))) {
-		err = -EFAULT;
-	}
 	return err;
 }
 
-bool susfs_is_sus_type(u32 type_value) {
+bool susfs_is_sus_type_rcu(u32 type_value) {
 	struct st_susfs_sus_type_hlist *entry = NULL;
 
 	hash_for_each_possible_rcu(SUS_TYPE_HLIST, entry, node, type_value) {
-		if (entry->type_value == type_value) {
+		/*
+		 * Only report a hit for the exact type.  Without this the few
+		 * shared buckets would make every context lookup on an
+		 * unrelated type fail, since callers turn a hit into -EINVAL.
+		 */
+		if (entry->type_value == type_value)
 			return true;
-		}
 	}
 	return false;
 }
 
 /* avd_allowed */
-#define MAX_AVD_ALLOWED_ENTRIES 262144 // bucket size of 10
 static DEFINE_MUTEX(susfs_mutex_lock_sus_avd_allowed_hlist);
-static DEFINE_HASHTABLE(AVD_ALLOWED_HLIST, AVD_ALLOWED_BMT_SIZE);
-static atomic_t susfs_avd_allowed_counter = ATOMIC_INIT(0);
+#define AVD_ALLOWED_BKT_SIZE 18
+#define MAX_AVD_ALLOWED_ENTRIES 262144 // bucket size of 18
+static DEFINE_HASHTABLE(SUS_AVD_ALLOWED_HLIST, AVD_ALLOWED_BKT_SIZE);
+static atomic_t avd_allowed_counter = ATOMIC_INIT(0);
 
-struct st_susfs_avd_allowed {
-	u32	s_type;
-	u32	t_type;
-	u32	c_type;
-	u32	orig_avd_allowed;
-};
-
-struct st_susfs_avd_rule_entry {
+struct susfs_sus_av_rule {
 	struct hlist_node	node;
-	u32	s_type;
-	u32	t_type;
-	u32	c_type;
-	u32	orig_avd_allowed;
+	u32			s_type;
+	u32			t_type;
+	u32			c_type;
+	u32			orig_avd_allowed;
 };
 
-static inline u32 susfs_avd_rule_hash(u32 s, u32 t, u32 c)
+static inline u32 susfs_av_rule_hash(u32 ssid, u32 tsid, u16 tclass)
 {
-	return hash_32(s ^ (t << 8) ^ (c << 16), AVD_ALLOWED_BMT_SIZE);
+	return hash_32(ssid ^ (tsid << 2) ^ (tclass << 4), AVD_ALLOWED_BKT_SIZE);
 }
 
 int susfs_add_sus_avd_allowed_by_type(u32 s_type, u32 t_type, u32 c_type, u32 orig_avd_allowed)
 {
-	struct st_susfs_avd_rule_entry *entry, *tmp_entry;
+	struct susfs_sus_av_rule *entry, *tmp_entry;
 	struct hlist_node *tmp_hlist_node;
 	int err = 0;
 	u32 key;
 
-	// do not allow to add more rule if it has the maximum limit
-	if (atomic_read(&susfs_avd_allowed_counter) >= MAX_AVD_ALLOWED_ENTRIES) {
-		SUSFS_LOGE("AVD_ALLOWED_HLIST has reached the maximum limit of %u", MAX_AVD_ALLOWED_ENTRIES);
+	// do not allow to add any new rule if it has the maximum limit
+	if (atomic_read(&avd_allowed_counter) >= MAX_AVD_ALLOWED_ENTRIES) {
+		SUSFS_LOGE("SUS_AVD_ALLOWED_HLIST has reached the maximum limit of %u", MAX_AVD_ALLOWED_ENTRIES);
 		return -EINVAL;
 	}
 
 	mutex_lock(&susfs_mutex_lock_sus_avd_allowed_hlist);
+
 	entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
 	if (!entry) {
 		err = -ENOMEM;
 		goto unlock;
 	}
 
-	key = susfs_avd_rule_hash(s_type, t_type, c_type);
-	hash_for_each_possible_safe(AVD_ALLOWED_HLIST, tmp_entry, tmp_hlist_node, node, key) {
+	key = susfs_av_rule_hash(s_type, t_type, c_type);
+	hash_for_each_possible_safe(SUS_AVD_ALLOWED_HLIST, tmp_entry, tmp_hlist_node, node, key) {
 		if (tmp_entry->s_type == s_type &&
-			tmp_entry->t_type == t_type &&
-			tmp_entry->c_type == c_type)
+		    tmp_entry->t_type == t_type &&
+		    tmp_entry->c_type == c_type)
 		{
-			// Do not apply new orig_avd_allowed for matched entry.
+			// Do not apply any new orig_avd_allowed for matched entry.
 			kfree(entry);
 			goto unlock;
 		}
 	}
 
-	atomic_inc(&susfs_avd_allowed_counter);
+	atomic_inc(&avd_allowed_counter);
+
 	entry->s_type = s_type;
 	entry->t_type = t_type;
 	entry->c_type = c_type;
 	entry->orig_avd_allowed = orig_avd_allowed;
 
-	hash_add_rcu(AVD_ALLOWED_HLIST, &entry->node, key);
-	SUSFS_LOGI("avd rule '%u %u %u' has been added to AVD_ALLOWED_HLIST\n",
-			s_type, t_type, c_type, orig_avd_allowed);
-
+	hash_add_rcu(SUS_AVD_ALLOWED_HLIST, &entry->node, key);
+	SUSFS_LOGI("av_rule '%u %u %u %u' has been added to SUS_AVD_ALLOWED_HLIST\n",
+				s_type, t_type, c_type, orig_avd_allowed);
 unlock:
 	mutex_unlock(&susfs_mutex_lock_sus_avd_allowed_hlist);
 	return err;
 }
 
-void susfs_put_sus_avd_allowed(u32 s_type, u32 t_type, u32 c_type, u32 *orig_avd_allowed)
+void susfs_spoof_avd_allowed_rcu(u32 s_type, u32 t_type, u32 c_type, u32 *avd_allowed)
 {
-	struct st_susfs_avd_rule_entry *entry;
-	u32 key = susfs_avd_rule_hash(s_type, t_type, c_type);
+	struct susfs_sus_av_rule *entry;
+	u32 key = susfs_av_rule_hash(s_type, t_type, c_type);
 
-	// we don't need check for collision as the bucket size is 10 and
-	// the size of AVD_ALLOWED_HLIST will not exceed 262144 entries.
-	hash_for_each_possible_rcu(AVD_ALLOWED_HLIST, entry, node, key) {
-		if (entry->s_type == s_type &&
-			entry->t_type == t_type &&
-			entry->c_type == c_type)
-		{
-			*orig_avd_allowed = entry->orig_avd_allowed;
-			return;
-		}
+	hash_for_each_possible_rcu(SUS_AVD_ALLOWED_HLIST, entry, node, key) {
+		/*
+		 * The hash is only 18 buckets for up to 262144 rules, so a
+		 * bucket holds many rules.  Compare the triple: handing back
+		 * another rule's allowed mask would grant the wrong SELinux
+		 * permissions.
+		 */
+		if (entry->s_type != s_type ||
+		    entry->t_type != t_type ||
+		    entry->c_type != c_type)
+			continue;
+		*avd_allowed = entry->orig_avd_allowed;
+		return;
 	}
 }
 
