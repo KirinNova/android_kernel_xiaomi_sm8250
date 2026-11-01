@@ -1,98 +1,178 @@
 name: Build Kernel
 
 on:
+  push:
+    branches:
+      - BakaSU
   workflow_dispatch:
     inputs:
       device:
         description: 'Target Device Code (设备代号)'
         required: true
-        default: 'lmi'
+        default: 'alioth'
         type: choice
         options:
           - alioth
-          - apollo
-          - cas
-          - cmi
-          - dagu
-          - elish
-          - enuma
           - lmi
-          - munch
-          - pipa
-          - psyche
-          - thyme
-          - umi
       ksu:
-        description: 'Enable KernelSU (ReSukiSU)'
+        description: 'Enable KernelSU (BakaSU)'
         required: true
         type: boolean
-        default: false
+        default: true
       target_os:
         description: 'Target OS (目标系统)'
         required: true
+        default: 'miui'
         type: choice
-        default: 'both'
         options:
           - aosp
           - miui
           - both
+      release:
+        description: 'Publish to GitHub Releases (发布到 Releases)'
+        required: true
+        type: boolean
+        default: true
+
+  schedule:
+    - cron: '13 12 * * 1-6'
+    - cron: '59 14 * * 0'
+
+env:
+  CCACHE_DIR: ~/.cache/ccache_mikernel
+  CCACHE_MAXSIZE: 10G
+  CCACHE_COMPRESS: 1
+  CCACHE_COMPRESSLEVEL: 6
 
 jobs:
   build-kernel:
-    name: Build ${{ github.event.inputs.device }} | KSU:${{ github.event.inputs.ksu }} | OS:${{ github.event.inputs.target_os }}
+    name: Build ${{ github.event.inputs.device || 'alioth' }} | KSU:${{ github.event.inputs.ksu || true }} | OS:${{ github.event.inputs.target_os || 'miui' }}
     runs-on: ubuntu-latest
-    
+
+    permissions:
+      contents: write
+
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v7
-      with:
-        fetch-depth: 1
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-    - name: Set up Environment
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y bc bison build-essential ccache curl flex gawk \
-          git gnupg gperf imagemagick libncurses-dev \
-          lib32readline-dev lib32z1-dev liblz4-tool \
-          libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync \
-          schedtool squashfs-tools xsltproc zip zlib1g-dev python3
-          
-    - name: Cache ccache
-      uses: actions/cache@v6
-      with:
-        path: ~/.cache/ccache_mikernel
-        key: ${{ runner.os }}-kernel-ccache-${{ github.event.inputs.device }}-${{ github.run_id }}
-        restore-keys: |
-          ${{ runner.os }}-kernel-ccache-${{ github.event.inputs.device }}-
-          ${{ runner.os }}-kernel-ccache-
+      - name: Set up Environment
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex gawk git gnupg gperf \
+            imagemagick libncurses-dev lib32z1-dev liblz4-tool \
+            libsdl1.2-compat-dev libssl-dev libxml2-utils lzop pngcrush rsync \
+            schedtool squashfs-tools xsltproc zip zlib1g-dev python3 \
+            dwarves libelf-dev lld llvm
 
-    - name: Setup zyc-clang 16 Toolchain
-      run: |
-        mkdir -p $HOME/zyc-clang
-        cd $HOME/zyc-clang
-        wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
-        tar -zxvf Clang-16.0.6-20260510.tar.gz
+      - name: Cache zyc-clang Toolchain
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ~/zyc-clang
+          key: zyc-clang-16.0.6-20260510
 
-    - name: Run Build Script
-      run: |
-        chmod +x build_kernel.sh
-        
-        ARGS="${{ github.event.inputs.device }}"
-        
-        if [ "${{ github.event.inputs.ksu }}" == "true" ]; then
-          ARGS="$ARGS ksu"
-        fi
-        
-        if [ "${{ github.event.inputs.target_os }}" != "both" ]; then
-          ARGS="$ARGS ${{ github.event.inputs.target_os }}"
-        fi
-        
-        echo "Executing command: ./build_kernel.sh $ARGS"
-        ./build_kernel.sh $ARGS
+      - name: Setup zyc-clang 16 Toolchain
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p $HOME/zyc-clang
+          cd $HOME/zyc-clang
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
+          tar -zxvf Clang-16.0.6-20260510.tar.gz
+          rm Clang-16.0.6-20260510.tar.gz
 
-    - name: Upload Flashable ZIP
-      uses: actions/upload-artifact@v7
-      with:
-        name: APTKernel-${{ github.event.inputs.device }}-${{ github.event.inputs.target_os }}-${{ github.run_id }}
-        path: APTKernel_*.zip
-        compression-level: 0 # 已经被 zip 压缩过，无需再二次压缩
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-kernel-ccache-${{ github.event.inputs.device || 'alioth' }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-kernel-ccache-${{ github.event.inputs.device || 'alioth' }}-
+            ${{ runner.os }}-kernel-ccache-
+
+      - name: Configure ccache & Print Pre-Build Stats
+        run: |
+          ccache -M ${{ env.CCACHE_MAXSIZE }}
+          ccache -z
+          echo "=== Pre-Build Ccache Stats ==="
+          ccache -s
+
+      - name: Modify kernel version string (Remove cip/st extra suffix)
+        run: |
+          sed -i 's|^EXTRAVERSION =.*|EXTRAVERSION = -Ikun-KirinNova|' Makefile
+            
+          find arch/arm64/configs -maxdepth 1 -type f -name "*defconfig" | while read -r file; do
+            sed -i '/CONFIG_LOCALVERSION_AUTO/d' "$file"
+            echo 'CONFIG_LOCALVERSION_AUTO=n' >> "$file"
+            sed -i '/CONFIG_LOCALVERSION=/d' "$file"
+            echo 'CONFIG_LOCALVERSION=""' >> "$file"
+          done
+            
+          echo '#!/bin/sh' > scripts/setlocalversion
+          echo 'echo ""' >> scripts/setlocalversion
+          chmod +x scripts/setlocalversion
+
+      - name: Run Build Script
+        run: |
+          chmod +x build_kernel.sh
+          export LOCALVERSION=""
+          export USE_CCACHE=1
+          export CCACHE_EXEC=$(which ccache)
+            
+          DEVICE="${{ github.event.inputs.device || 'alioth' }}"
+          KSU="${{ github.event.inputs.ksu || 'true' }}"
+          TARGET_OS="${{ github.event.inputs.target_os || 'miui' }}"
+            
+          ARGS="$DEVICE"
+          [ "$KSU" == "true" ] && ARGS="$ARGS ksu"
+          [ "$TARGET_OS" != "both" ] && ARGS="$ARGS $TARGET_OS"
+            
+          echo "Executing command: ./build_kernel.sh $ARGS"
+          ./build_kernel.sh $ARGS
+
+      - name: Verify KERNEL_SECURITY_CHECK in generated .config
+        if: always()
+        run: |
+          echo "=== Checking KERNEL_SECURITY_CHECK in out_*/.config ==="
+          for cfg in out_*/.config; do
+            if [ -f "$cfg" ]; then
+              echo "--- $cfg ---"
+              grep -n "KERNEL_SECURITY_CHECK" "$cfg" || echo "(not found!)"
+            fi
+          done
+          echo "=== Checking kernel_security_check objects ==="
+          find out_* -name "kernel_security_check.o" 2>/dev/null || true
+          find out_* -name "kernel_security_check.ko" 2>/dev/null || true
+          echo "=== Checking built-in.a ==="
+          find out_* -path "*security_check*" -name "built-in.a" 2>/dev/null || true
+
+      - name: Print Post-Build Ccache Stats
+        if: always()
+        run: |
+          echo "=== Post-Build Ccache Stats ==="
+          ccache -s
+
+      - name: Upload Flashable ZIP & Modules (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: DEBUG_APTKernel-${{ github.event.inputs.device || 'alioth' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_id }}
+          path: "*.zip"
+          compression-level: 0
+
+      - name: Publish Release
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event.inputs.release != 'false' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*.zip"
+          tag_name: kernel-${{ github.event.inputs.device || 'alioth' }}-${{ github.run_id }}
+          name: "Kernel Build for ${{ github.event.inputs.device || 'alioth' }} (${{ github.event.inputs.target_os || 'miui' }})"
+          body: |
+            Automatic kernel build.
+            - **Device:** ${{ github.event.inputs.device || 'alioth' }}
+            - **KernelSU:** ${{ github.event.inputs.ksu || 'true' }}
+            - **Target OS:** ${{ github.event.inputs.target_os || 'miui' }}
+          draft: false
+          prerelease: false
