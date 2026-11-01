@@ -1,14 +1,7 @@
 #!/bin/bash
 
-# Some logics of this script are copied from [scripts/build_kernel]. Thanks to UtsavBalar1231.
-
-# Exit on command or pipeline failures. This is important for remote setup/patch
-# downloads: a failed curl must never be hidden by the command behind the pipe.
 set -eo pipefail
 
-# ==========================================
-# Argument Parsing
-# ==========================================
 if [ -z "$1" ]; then
     echo "[!] Error: No device specified."
     echo "Usage: $0 <device_name> [ksu] [miui|aosp]"
@@ -33,7 +26,6 @@ ENABLE_KSU=0
 TARGET_OS="both"
 
 shift
-# Parse remaining arguments loosely
 for arg in "$@"; do
     case "$arg" in
         ksu) ENABLE_KSU=1 ;;
@@ -42,9 +34,6 @@ for arg in "$@"; do
     esac
 done
 
-# ==========================================
-# Configuration & Environment
-# ==========================================
 KERNEL_DIR="$(pwd)"
 TOOLCHAIN_BIN="$HOME/zyc-clang/bin"
 
@@ -52,7 +41,6 @@ export PATH="${TOOLCHAIN_BIN}:${PATH}"
 export ARCH="arm64"
 export SUBARCH="arm64"
 
-# ccache Setup
 export CCACHE_DIR="$HOME/.cache/ccache_mikernel"
 export CCACHE_EXEC=$(command -v ccache)
 
@@ -71,9 +59,6 @@ clang --version || { echo "[!] Clang not found at ${TOOLCHAIN_BIN}. Please check
 echo "[*] Setting up ccache in $CCACHE_DIR..."
 mkdir -p "$CCACHE_DIR"
 
-# ==========================================
-# Droidspaces Constants & Functions
-# ==========================================
 DROIDSPACES_VERSION="${DROIDSPACES_VERSION:-v6.4.5}"
 DROIDSPACES_PATCH_BASE="https://raw.githubusercontent.com/ravindu644/Droidspaces-OSS/${DROIDSPACES_VERSION}/Documentation/resources/kernel-patches/non-GKI"
 DROIDSPACES_XT_QTAGUID_SHA256="f71898942e0f872c5cf28ebaef0dcd9b9efe7e02f0dfc8310441efa8772fed7d"
@@ -154,13 +139,15 @@ configure_droidspaces_non_gki() {
         NAMESPACES PID_NS UTS_NS IPC_NS
         SECCOMP SECCOMP_FILTER
         CGROUPS CGROUP_DEVICE CGROUP_PIDS MEMCG CGROUP_SCHED
-        FAIR_GROUP_SCHED CGROUP_FREEZER
+        FAIR_GROUP_SCHED CFS_BANDWIDTH
+        CGROUP_FREEZER
         DEVTMPFS OVERLAY_FS
-        NET_NS VETH BRIDGE NETFILTER BRIDGE_NETFILTER
+        NET_NS VETH BRIDGE MACVLAN NETFILTER BRIDGE_NETFILTER
         NF_CONNTRACK IP_NF_IPTABLES IP_NF_FILTER NF_NAT NF_TABLES
         IP_NF_TARGET_MASQUERADE
         NETFILTER_XT_TARGET_TCPMSS NETFILTER_XT_MATCH_ADDRTYPE
         NF_CT_NETLINK NF_NAT_REDIRECT
+        NF_NAT_IPV6 IP6_NF_NAT IP6_NF_TARGET_MASQUERADE
         IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES
     )
 
@@ -181,6 +168,7 @@ configure_droidspaces_non_gki() {
         -e MEMCG \
         -e CGROUP_SCHED \
         -e FAIR_GROUP_SCHED \
+        -e CFS_BANDWIDTH \
         -e CGROUP_FREEZER \
         -e CGROUP_NET_PRIO \
         -e DEVTMPFS \
@@ -193,10 +181,12 @@ configure_droidspaces_non_gki() {
         -e NET_NS \
         -e VETH \
         -e BRIDGE \
+        -e MACVLAN \
         -e NETFILTER \
         -e BRIDGE_NETFILTER \
         -e NETFILTER_ADVANCED \
         -e NF_CONNTRACK \
+        -e NF_CONNTRACK_IPV6 \
         -e IP_NF_IPTABLES \
         -e IP_NF_FILTER \
         -e NF_NAT \
@@ -208,6 +198,11 @@ configure_droidspaces_non_gki() {
         -e NF_CT_NETLINK \
         -e NF_CONNTRACK_NETLINK \
         -e NF_NAT_REDIRECT \
+        -e NF_NAT_IPV6 \
+        -e IP6_NF_IPTABLES \
+        -e IP6_NF_FILTER \
+        -e IP6_NF_NAT \
+        -e IP6_NF_TARGET_MASQUERADE \
         -e IP_ADVANCED_ROUTER \
         -e IP_MULTIPLE_TABLES \
         -e NF_CONNTRACK_IPV4 \
@@ -216,7 +211,6 @@ configure_droidspaces_non_gki() {
         -e USER_NS \
         -d ANDROID_PARANOID_NETWORK
 
-    # Resolve dependencies now
     make "${MAKE_OPTS[@]}" olddefconfig 2>/dev/null || true
 
     if grep -Eq '^CONFIG_PERF_HUMANTASK=(y|m)$' "${out_dir}/.config"; then
@@ -241,21 +235,15 @@ configure_droidspaces_non_gki() {
     echo "Droidspaces critical configuration verified after olddefconfig."
 }
 
-# ==========================================
-# KernelSU Setup
-# ==========================================
 if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "==========================================="
     echo " [*] Initializing KernelSU  Setup"
     echo "==========================================="
     echo "[*] Downloading and running KernelSU remote setup script..."
-    curl -LSs "https://raw.githubusercontent.com/KirinNova/HyperSU/builtin/kernel/setup.sh" | bash
+    curl -LSs "https://raw.githubusercontent.com/HyperSU-Team/HyperSU/main/kernel/setup.sh" | bash
     echo "[+] KernelSU setup finished."
 fi
 
-# ==========================================
-# Baseband-guard Setup
-# ==========================================
 echo "==========================================="
 echo " [*] Initializing Baseband-guard Setup"
 echo "==========================================="
@@ -267,9 +255,6 @@ sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/se
 echo "[+] Baseband-guard setup finished."
 echo "==========================================="
 
-# ==========================================
-# Droidspaces Source Code Integration
-# ==========================================
 echo "==========================================="
 echo " [*] Integrating Droidspaces Non-GKI Patches"
 echo "==========================================="
@@ -277,9 +262,6 @@ integrate_droidspaces_non_gki
 echo "[+] Droidspaces source patches integrated."
 echo "==========================================="
 
-# ==========================================
-# AnyKernel3 Setup
-# ==========================================
 echo "==========================================="
 echo " [*] Initializing AnyKernel3 Workspace"
 echo "==========================================="
@@ -292,18 +274,14 @@ sed -i "s/^device\.name1=.*/device.name1=${DEVICE_NAME}/" anykernel/anykernel.sh
 echo "[*] AnyKernel3 adjusted successfully."
 echo "==========================================="
 
-# ==========================================
-# Modular Build Function
-# ==========================================
 build_target() {
     local OS_TYPE=$1
     echo "==========================================="
     echo " Starting Kernel Compilation for ${DEVICE_NAME} (Target: $OS_TYPE)"
     echo "==========================================="
-    
+
     local OUT_DIR="${KERNEL_DIR}/out_${OS_TYPE}"
-    
-    # Make options need to be available globally for functions like olddefconfig inside scripts/config calls
+
     MAKE_OPTS=(
         -j"$(nproc)"
         O="${OUT_DIR}"
@@ -327,8 +305,7 @@ build_target() {
     if [ "$OS_TYPE" == "miui" ]; then
         echo "[*] Applying MIUI DTS patches..."
         cp -a "${DTS_SOURCE}" "${DTS_BACKUP}"
-        
-        # Apply MIUI specific sed patches to dts
+
         sed -i 's/<154>/<1537>/g' ${DTS_SOURCE}/dsi-panel-j1s* || true
         sed -i 's/<154>/<1537>/g' ${DTS_SOURCE}/dsi-panel-j2* || true
         sed -i 's/<155>/<1544>/g' ${DTS_SOURCE}/dsi-panel-j3s-37-02-0a-dsc-video.dtsi || true
@@ -380,19 +357,12 @@ build_target() {
     echo "[*] Making defconfig: ${DEFCONFIG}..."
     make "${MAKE_OPTS[@]}" "${DEFCONFIG}"
 
-    # ----------------------------------------------------
-    # Configuration tweaks
-    # ----------------------------------------------------
-    
-    # 1. Baseband-guard configuration (Always applied)
     echo "[*] Injecting Baseband-guard configuration..."
     scripts/config --file "${OUT_DIR}/.config" -e BBG
 
-    # 1.5 Kernel Security Check (Force enable built-in)
     echo "[*] Injecting Kernel Security Check configuration..."
     scripts/config --file "${OUT_DIR}/.config" -e KERNEL_SECURITY_CHECK
 
-    # 2. KernelSU configurations
     if [ "$ENABLE_KSU" -eq 1 ]; then
         echo "[*] Injecting KernelSU & SUSFS configurations..."
         scripts/config --file "${OUT_DIR}/.config" \
@@ -401,9 +371,8 @@ build_target() {
             -e KSU_SUSFS
     fi
 
-    # 3. Droidspaces Non-GKI configurations
     configure_droidspaces_non_gki "${OUT_DIR}"
-    # 4.bbr
+
     echo "[*] Injecting user-specified custom options (BBG, REKERNEL, NETFILTER, BBR, etc.)..."
     scripts/config --file "${OUT_DIR}/.config" \
         -e BBG \
@@ -443,6 +412,11 @@ build_target() {
         -e VETH \
         -e BRIDGE \
         -e BRIDGE_NETFILTER \
+        -e MACVLAN \
+        -e NF_NAT_IPV6 \
+        -e IP6_NF_IPTABLES \
+        -e IP6_NF_NAT \
+        -e IP6_NF_TARGET_MASQUERADE \
         -e TUN \
         -e PPP \
         -e PPP_MPPE \
@@ -467,7 +441,6 @@ build_target() {
 
     scripts/config --file "${OUT_DIR}/.config" --set-str DEFAULT_NET_TCP_ALG "bbr" 2>/dev/null || true
 
-    # 5. MIUI configurations
     if [ "$OS_TYPE" == "miui" ]; then
         echo "[*] Injecting MIUI specific configurations..."
         scripts/config --file "${OUT_DIR}/.config" \
@@ -503,7 +476,6 @@ build_target() {
             -e BINDER_PRIO
     fi
 
-    # 6. AOSP configurations
     if [ "$OS_TYPE" == "aosp" ]; then
         echo "[*] Injecting AOSP specific configurations..."
         scripts/config --file "${OUT_DIR}/.config" \
@@ -511,11 +483,9 @@ build_target() {
             -e REKERNEL_NETWORK
     fi
 
-    # We always need to re-evaluate dependencies because BBG and Droidspaces are injected
     echo "[*] Updating config (make olddefconfig)..."
     make "${MAKE_OPTS[@]}" olddefconfig
 
-    # Verify KERNEL_SECURITY_CHECK survived olddefconfig
     if grep -qx "CONFIG_KERNEL_SECURITY_CHECK=y" "${OUT_DIR}/.config"; then
         echo "[+] KERNEL_SECURITY_CHECK=y verified after olddefconfig."
     else
@@ -523,13 +493,30 @@ build_target() {
         grep "KERNEL_SECURITY_CHECK" "${OUT_DIR}/.config" || true
     fi
 
-    # ----------------------------------------------------
-    # Compilation
-    # ----------------------------------------------------
-    echo "[*] Building kernel..."
-    make "${MAKE_OPTS[@]}" 
+    echo "[*] Final Droidspaces feature verification after olddefconfig..."
+    local final_missing=0 final_symbol
+    local final_check=(
+        PID_NS
+        FAIR_GROUP_SCHED CFS_BANDWIDTH
+        MACVLAN
+        NF_NAT_IPV6 IP6_NF_NAT IP6_NF_TARGET_MASQUERADE
+    )
+    for final_symbol in "${final_check[@]}"; do
+        if grep -qx "CONFIG_${final_symbol}=y" "${OUT_DIR}/.config"; then
+            echo "[+] CONFIG_${final_symbol}=y verified."
+        else
+            echo "[-] CONFIG_${final_symbol}=y missing in final .config!"
+            final_missing=1
+        fi
+    done
+    if [ "$final_missing" -ne 0 ]; then
+        echo "ERROR: Final Droidspaces feature verification failed; aborting before compilation."
+        exit 1
+    fi
 
-    # Restore DTS backup for MIUI
+    echo "[*] Building kernel..."
+    make "${MAKE_OPTS[@]}"
+
     if [ "$OS_TYPE" == "miui" ]; then
         echo "[*] Restoring DTS backups..."
         rm -rf "${DTS_SOURCE}"
@@ -544,14 +531,14 @@ build_target() {
         echo "[*] Packaging to AnyKernel3 ($OS_TYPE)..."
         rm -rf anykernel/kernels/*
         mkdir -p "anykernel/kernels/${OS_TYPE}/"
-        
+
         cp "${OUT_DIR}/arch/arm64/boot/Image" "anykernel/kernels/${OS_TYPE}/"
         cp "${OUT_DIR}/arch/arm64/boot/dtb" "anykernel/kernels/${OS_TYPE}/"
-        
+
         if [ -f "${OUT_DIR}/arch/arm64/boot/dtbo.img" ]; then
             cp "${OUT_DIR}/arch/arm64/boot/dtbo.img" "anykernel/kernels/${OS_TYPE}/"
         fi
-        
+
         local KSU_ZIP_STR="NoKernelSU"
         if [ "$ENABLE_KSU" -eq 1 ]; then
             KSU_ZIP_STR="HyperSU-SuSFS"
@@ -559,13 +546,13 @@ build_target() {
         local GIT_COMMIT_ID=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
         local OS_UPPER=$(echo "$OS_TYPE" | tr '[:lower:]' '[:upper:]')
         local ZIP_FILENAME="APTKernel_${OS_UPPER}_${DEVICE_NAME}_${KSU_ZIP_STR}_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip"
-        
+
         echo "[*] Zipping $ZIP_FILENAME ..."
         pushd anykernel > /dev/null
         zip -r9 "$ZIP_FILENAME" ./* -x .git .gitignore out/ ./*.zip > /dev/null
         mv "$ZIP_FILENAME" ../
         popd > /dev/null
-        
+
         echo "[+] $OS_TYPE kernel binaries successfully packed into: $ZIP_FILENAME"
     else
         echo "[-] $OS_TYPE Build Failed. Kernel Image not found."
@@ -573,9 +560,6 @@ build_target() {
     fi
 }
 
-# ==========================================
-# Execute builds based on target OS
-# ==========================================
 if [ "$TARGET_OS" == "aosp" ] || [ "$TARGET_OS" == "both" ]; then
     build_target "aosp"
 fi
