@@ -22,7 +22,9 @@
 #include <linux/jump_label.h>
 #include <linux/version.h> // We need check kernel version.
 #include <linux/security.h>
+#include <linux/bitops.h>
 #include <linux/hash.h>
+#include <linux/vmalloc.h>
 #include <linux/susfs.h>
 #include "fuse/fuse_i.h"
 #include "mount.h"
@@ -100,10 +102,7 @@ bool susfs_is_sus_type_rcu(u32 type_value) {
 
 /* avd_allowed */
 static DEFINE_MUTEX(susfs_mutex_lock_sus_avd_allowed_hlist);
-#define AVD_ALLOWED_BKT_SIZE 18
-#define MAX_AVD_ALLOWED_ENTRIES 262144 // bucket size of 18
-static DEFINE_HASHTABLE(SUS_AVD_ALLOWED_HLIST, AVD_ALLOWED_BKT_SIZE);
-static atomic_t avd_allowed_counter = ATOMIC_INIT(0);
+static DEFINE_HASHTABLE(SUS_AVD_ALLOWED_HLIST, 18);
 
 struct susfs_sus_av_rule {
 	struct hlist_node	node;
@@ -115,7 +114,18 @@ struct susfs_sus_av_rule {
 
 static inline u32 susfs_av_rule_hash(u32 ssid, u32 tsid, u16 tclass)
 {
-	return hash_32(ssid ^ (tsid << 2) ^ (tclass << 4), AVD_ALLOWED_BKT_SIZE);
+	u32 h;
+
+	h = hash_32(ssid, 32);
+	h ^= rol32(hash_32(tsid, 32), 13);
+	h ^= rol32(hash_32((u32)tclass, 32), 19);
+
+	h += h << 13;
+	h ^= h >> 7;
+	h += h << 17;
+	h ^= h >> 5;
+
+	return h;
 }
 
 int susfs_add_sus_avd_allowed_by_type(u32 s_type, u32 t_type, u32 c_type, u32 orig_avd_allowed)
@@ -124,12 +134,6 @@ int susfs_add_sus_avd_allowed_by_type(u32 s_type, u32 t_type, u32 c_type, u32 or
 	struct hlist_node *tmp_hlist_node;
 	int err = 0;
 	u32 key;
-
-	// do not allow to add any new rule if it has the maximum limit
-	if (atomic_read(&avd_allowed_counter) >= MAX_AVD_ALLOWED_ENTRIES) {
-		SUSFS_LOGE("SUS_AVD_ALLOWED_HLIST has reached the maximum limit of %u", MAX_AVD_ALLOWED_ENTRIES);
-		return -EINVAL;
-	}
 
 	mutex_lock(&susfs_mutex_lock_sus_avd_allowed_hlist);
 
@@ -150,8 +154,6 @@ int susfs_add_sus_avd_allowed_by_type(u32 s_type, u32 t_type, u32 c_type, u32 or
 			goto unlock;
 		}
 	}
-
-	atomic_inc(&avd_allowed_counter);
 
 	entry->s_type = s_type;
 	entry->t_type = t_type;
@@ -1432,42 +1434,103 @@ static bool susfs_is_valid_app_name(const char *app_name) {
 }
 
 /*
- * Resolves the uid of the given app package name with the owner uid of the
- * data path of the app ('/data/data/<app_name>').
+ * Resolves the uid of the given app package name from /data/system/packages.list.
  * Returns 0 on success, a negative errno on failure.
  */
 static int susfs_resolve_priority_app_uid(const char *app_name, uid_t *uid) {
-	char app_path[512];
-	struct path path;
-	struct kstat st;
-	int len;
-	int ret;
+	struct file *fp;
+	char *buf = NULL;
+	char *line, *tmp, *p;
+	char *pkg_name, *uid_str;
+	loff_t pos = 0;
+	size_t size;
+	unsigned long val;
+	int ret = -ENOENT;
 
-	len = scnprintf(app_path, sizeof(app_path), "/data/data/%s", app_name);
-	if (len < 0 || len >= sizeof(app_path)) {
-		SUSFS_LOGE("the app name '%s' is too long\n", app_name);
+	if (!app_name || !*app_name || !uid)
 		return -EINVAL;
-	}
 
-	ret = kern_path(app_path, LOOKUP_FOLLOW, &path);
-	if (ret) {
-		SUSFS_LOGE("failed to look up '%s': %d\n", app_path, ret);
+	if (!susfs_is_valid_app_name(app_name))
+		return -EINVAL;
+
+	fp = filp_open("/data/system/packages.list", O_RDONLY, 0);
+	if (IS_ERR(fp)) {
+		ret = PTR_ERR(fp);
+		SUSFS_LOGE("failed to open /data/system/packages.list: %d\n", ret);
 		return ret;
 	}
 
-	ret = vfs_getattr(&path, &st, STATX_BASIC_STATS, 0);
-	path_put(&path);
-	if (ret) {
-		SUSFS_LOGE("failed to get the attributes of '%s': %d\n", app_path, ret);
-		return ret;
+	size = i_size_read(file_inode(fp));
+	if (size <= 0 || size > (4 * 1024 * 1024)) {
+		filp_close(fp, NULL);
+		return -EFBIG;
 	}
 
-	*uid = from_kuid(&init_user_ns, st.uid);
-	if (*uid < SUSFS_PRIORITY_UID_FILTER_MIN_UID ||
-		*uid > SUSFS_PRIORITY_UID_FILTER_MAX_UID)
-		return -EINVAL;
+	buf = vmalloc(size + 1);
+	if (!buf) {
+		filp_close(fp, NULL);
+		return -ENOMEM;
+	}
+	buf[size] = '\0';
 
-	return 0;
+	ret = kernel_read(fp, buf, size, &pos);
+	filp_close(fp, NULL);
+	if (ret != (int)size) {
+		vfree(buf);
+		return -EIO;
+	}
+
+	line = buf;
+	while (line && *line) {
+		p = strchr(line, '\n');
+		if (p) {
+			*p = '\0';
+			tmp = p + 1;
+		} else {
+			tmp = NULL;
+		}
+
+		/* skip empty lines */
+		if (*line == '\0' || *line == '\r') {
+			line = tmp;
+			continue;
+		}
+
+		/* packages.list format: <package> <uid> <gid> ... */
+		pkg_name = strsep(&line, " \t");
+		if (!pkg_name || *pkg_name == '\0') {
+			line = tmp;
+			continue;
+		}
+
+		uid_str = strsep(&line, " \t");
+		if (!uid_str || *uid_str == '\0') {
+			line = tmp;
+			continue;
+		}
+
+		if (!strcmp(pkg_name, app_name)) {
+			if (kstrtoul(uid_str, 10, &val)) {
+				vfree(buf);
+				return -EINVAL;
+			}
+
+			*uid = (uid_t)val % 100000;
+
+			vfree(buf);
+
+			if (*uid < SUSFS_PRIORITY_UID_FILTER_MIN_UID ||
+			    *uid > SUSFS_PRIORITY_UID_FILTER_MAX_UID)
+				return -EINVAL;
+
+			return 0;
+		}
+
+		line = tmp;
+	}
+
+	vfree(buf);
+	return -ENOENT;
 }
 
 /*
@@ -1587,7 +1650,7 @@ void susfs_set_priority_uid_filter(void __user **user_info) {
 
 	if (is_uid_filter_set_before)
 		SUSFS_LOGI("renewing the priority uid filter\n");
-	err = susfs_parse_priority_app_names(info->app_strings, new_bitmap->bits, false);
+	err = susfs_parse_priority_app_names(info->app_strings, new_bitmap->bits, true);
 
 	susfs_restore_creds(orig_cred);
 	orig_cred = NULL;
