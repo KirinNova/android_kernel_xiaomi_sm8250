@@ -267,12 +267,13 @@ echo " [*] Initializing AnyKernel3 Workspace"
 echo "==========================================="
 rm -rf anykernel
 echo "[*] Cloning AnyKernel3..."
-# The previously used AstideLabs/AnyKernel3 (branch kona) has been deleted and
-# now returns 404, which made git ask for credentials and aborted the build.
-# oplus-kona/AnyKernel3 is an SM8250 AnyKernel3 template using BLOCK=boot, so
-# it resolves the boot partition through by-name and is device agnostic.
+# AstideLabs/AnyKernel3 (branch kona), the original source, has been deleted
+# and now returns 404, which made git ask for credentials and aborted the
+# build.  KirinNova/AnyKernel3- is our own fork of osm0sis/AnyKernel3 whose
+# anykernel.sh is configured for Xiaomi SM8250: BLOCK=boot, no device check,
+# and it picks kernels/<os>/ written by the packaging step below.
 # Override with ANYKERNEL3_REPO / ANYKERNEL3_BRANCH if needed.
-AK3_REPO=${ANYKERNEL3_REPO:-https://github.com/oplus-kona/AnyKernel3}
+AK3_REPO=${ANYKERNEL3_REPO:-https://github.com/KirinNova/AnyKernel3-}
 AK3_BRANCH=${ANYKERNEL3_BRANCH:-master}
 git clone "$AK3_REPO" -b "$AK3_BRANCH" --single-branch --depth=1 anykernel
 echo "[+] AnyKernel3 cloned successfully."
