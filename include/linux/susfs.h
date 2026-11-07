@@ -25,6 +25,7 @@
 /********/
 /* ENUM */
 /********/
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 enum UID_SCHEME {
 	UID_NON_APP_PROC = 0,
 	UID_ROOT_PROC_EXCEPT_SU_PROC,
@@ -32,6 +33,7 @@ enum UID_SCHEME {
 	UID_UMOUNTED_APP_PROC,
 	UID_UMOUNTED_PROC,
 };
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 
 /**********/
 /* STRUCT */
@@ -166,10 +168,13 @@ struct st_susfs_avc_log_spoofing {
 };
 
 /* getpriority uid filter */
+#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
+#define SUSFS_APP_STR_BUF_SIZE 65535
 struct st_susfs_priority_uid_filter {
 	char                                    app_strings[SUSFS_APP_STR_BUF_SIZE];
 	int                                     err;
 };
+#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 
 /* get enabled features */
 struct st_susfs_enabled_features {
@@ -236,9 +241,11 @@ void susfs_add_sus_map(void __user **user_info);
 #endif
 
 /* getpriority uid filter */
+#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 void susfs_set_priority_uid_filter(void __user **user_info);
 void susfs_parse_priority_app_strings(void);
 bool susfs_is_priority_uid_filtered(uid_t uid);
+#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 
 /* sus_type - records type values hidden by ksu_type() */
 int susfs_add_sus_type(const char *secctx, u32 type_value);
