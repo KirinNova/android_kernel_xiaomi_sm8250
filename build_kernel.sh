@@ -267,7 +267,14 @@ echo " [*] Initializing AnyKernel3 Workspace"
 echo "==========================================="
 rm -rf anykernel
 echo "[*] Cloning AnyKernel3..."
-git clone https://github.com/AstideLabs/AnyKernel3 -b kona --single-branch --depth=1 anykernel
+# The previously used AstideLabs/AnyKernel3 (branch kona) has been deleted and
+# now returns 404, which made git ask for credentials and aborted the build.
+# oplus-kona/AnyKernel3 is an SM8250 AnyKernel3 template using BLOCK=boot, so
+# it resolves the boot partition through by-name and is device agnostic.
+# Override with ANYKERNEL3_REPO / ANYKERNEL3_BRANCH if needed.
+AK3_REPO=${ANYKERNEL3_REPO:-https://github.com/oplus-kona/AnyKernel3}
+AK3_BRANCH=${ANYKERNEL3_BRANCH:-master}
+git clone "$AK3_REPO" -b "$AK3_BRANCH" --single-branch --depth=1 anykernel
 echo "[+] AnyKernel3 cloned successfully."
 echo "[*] Adjusting AnyKernel3..."
 sed -i "s/^device\.name1=.*/device.name1=${DEVICE_NAME}/" anykernel/anykernel.sh
