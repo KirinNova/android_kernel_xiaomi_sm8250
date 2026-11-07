@@ -2,6 +2,12 @@
 
 set -eo pipefail
 
+# KernelSU flavour shipped by this branch.  Used in the packaged zip filename
+# so an archive can be traced back to the branch that produced it.
+#   Bakasu  branch -> "Bakasu"
+#   HyperSU branch -> "HyperSU"
+KSU_FLAVOR="HyperSU"
+
 if [ -z "$1" ]; then
     echo "[!] Error: No device specified."
     echo "Usage: $0 <device_name> [ksu] [miui|aosp]"
@@ -547,13 +553,15 @@ build_target() {
             cp "${OUT_DIR}/arch/arm64/boot/dtbo.img" "anykernel/kernels/${OS_TYPE}/"
         fi
 
-        local KSU_ZIP_STR="NoKernelSU"
+        # The archive name carries the branch flavour (KSU_FLAVOR) instead of
+        # a fixed prefix, so Bakasu and HyperSU builds are distinguishable.
+        local KSU_ZIP_STR="${KSU_FLAVOR}-NoKernelSU"
         if [ "$ENABLE_KSU" -eq 1 ]; then
-            KSU_ZIP_STR="HyperSU-SuSFS"
+            KSU_ZIP_STR="${KSU_FLAVOR}-SuSFS"
         fi
         local GIT_COMMIT_ID=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
         local OS_UPPER=$(echo "$OS_TYPE" | tr '[:lower:]' '[:upper:]')
-        local ZIP_FILENAME="APTKernel_${OS_UPPER}_${DEVICE_NAME}_${KSU_ZIP_STR}_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip"
+        local ZIP_FILENAME="${OS_UPPER}_${DEVICE_NAME}_${KSU_ZIP_STR}_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip"
 
         echo "[*] Zipping $ZIP_FILENAME ..."
         pushd anykernel > /dev/null
