@@ -39,9 +39,13 @@ extern struct vfsmount *susfs_get_non_sus_vfsmnt_from_vfsmnt(struct vfsmount *vf
 DEFINE_STATIC_KEY_TRUE(susfs_is_log_enabled);
 #define SUSFS_LOGI(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_info("susfs:[%u][%d][%s] " fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
 #define SUSFS_LOGE(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_err("susfs:[%u][%d][%s]" fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
+#define SUSFS_LOGI_RL(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_info_ratelimited("susfs:[%u][%d][%s] " fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
+#define SUSFS_LOGE_RL(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_err_ratelimited("susfs:[%u][%d][%s]" fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
 #else
 #define SUSFS_LOGI(fmt, ...) 
 #define SUSFS_LOGE(fmt, ...) 
+#define SUSFS_LOGI_RL(fmt, ...) 
+#define SUSFS_LOGE_RL(fmt, ...) 
 #endif
 
 /* sus_type */
@@ -78,7 +82,7 @@ int susfs_add_sus_type(const char *secctx, u32 type_value) {
 
 	new_entry->type_value = type_value;
 	hash_add_rcu(SUS_TYPE_HLIST, &new_entry->node, type_value);
-	SUSFS_LOGI("secctx '%s', type '%u', has been added to SUS_TYPE_HLIST\n",
+	SUSFS_LOGI_RL("secctx '%s', type '%u', has been added to SUS_TYPE_HLIST\n",
 					secctx, type_value);
 unlock:
 	mutex_unlock(&susfs_mutex_lock_sus_type);
@@ -161,7 +165,7 @@ int susfs_add_sus_avd_allowed_by_type(u32 s_type, u32 t_type, u32 c_type, u32 or
 	entry->orig_avd_allowed = orig_avd_allowed;
 
 	hash_add_rcu(SUS_AVD_ALLOWED_HLIST, &entry->node, key);
-	SUSFS_LOGI("av_rule '%u %u %u %u' has been added to SUS_AVD_ALLOWED_HLIST\n",
+	SUSFS_LOGI_RL("av_rule '%u %u %u %u' has been added to SUS_AVD_ALLOWED_HLIST\n",
 				s_type, t_type, c_type, orig_avd_allowed);
 unlock:
 	mutex_unlock(&susfs_mutex_lock_sus_avd_allowed_hlist);
@@ -1341,6 +1345,19 @@ out_copy_to_user:
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 
 /* priority uid filter */
+#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
+/*****************************************/
+/* getpriority uid filter (bitmap)       */
+/*****************************************/
+/* The uids that are hidden from the apps that abuse the getpriority syscall
+ * to find out the existing uids. Only the uids within the app uid range
+ * (10000 - 19999) are supported.
+ */
+#define SUSFS_PRIORITY_UID_FILTER_MIN_UID 10000
+#define SUSFS_PRIORITY_UID_FILTER_MAX_UID 19999
+#define SUSFS_PRIORITY_UID_FILTER_UID_NUM (SUSFS_PRIORITY_UID_FILTER_MAX_UID - SUSFS_PRIORITY_UID_FILTER_MIN_UID + 1)
+#define SUSFS_PRIORITY_UID_FILTER_BITMAP_LEN BITS_TO_LONGS(SUSFS_PRIORITY_UID_FILTER_UID_NUM)
+
 struct susfs_priority_uid_filter_bitmap {
 	struct rcu_head			rcu;
 	unsigned long			bits[SUSFS_PRIORITY_UID_FILTER_BITMAP_LEN];
@@ -1453,7 +1470,7 @@ static int susfs_resolve_priority_app_uid(const char *app_name, uid_t *uid) {
 	if (!susfs_is_valid_app_name(app_name))
 		return -EINVAL;
 
-	fp = filp_open("/data/system/packages.list", O_RDONLY, 0);
+	fp = filp_open("/data/system/packages.list", O_RDONLY | O_NOATIME, 0);
 	if (IS_ERR(fp)) {
 		ret = PTR_ERR(fp);
 		SUSFS_LOGE("failed to open /data/system/packages.list: %d\n", ret);
@@ -1814,6 +1831,7 @@ bool susfs_is_priority_uid_filtered(uid_t uid) {
 
 	return false;
 }
+#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 
 /* susfs avc log spoofing */
 DEFINE_STATIC_KEY_FALSE(susfs_is_avc_log_spoofing_enabled);
@@ -1916,9 +1934,11 @@ void susfs_get_enabled_features(void __user **user_info) {
 	if (info->err) goto out_copy_to_user;
 	buf_ptr = info->enabled_features + copied_size;
 #endif
+#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 	info->err = copy_config_to_buf("CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n", buf_ptr, &copied_size, SUSFS_ENABLED_FEATURES_SIZE);
 	if (info->err) goto out_copy_to_user;
 	buf_ptr = info->enabled_features + copied_size;
+#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 
 	info->err = 0;
 out_copy_to_user:
