@@ -15,7 +15,9 @@ permissions:
 jobs:
   build-matrix:
     name: Build ${{ matrix.device }} | ${{ matrix.ksu && 'KSU' || 'NoKSU' }} (AOSP + MIUI)
-    runs-on: ubuntu-latest
+    # Pinned for the same reason as build.yml: ubuntu-latest has moved past
+    # 22.04 and the dependency list below was written for 22.04.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
