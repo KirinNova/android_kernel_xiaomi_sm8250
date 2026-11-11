@@ -30,7 +30,6 @@
 #include "mount.h"
 
 extern bool susfs_is_current_ksu_domain(void);
-extern void setup_selinux(const char *domain, struct cred *cred);
 extern struct cred *ksu_cred;
 extern int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt);
 extern struct vfsmount *susfs_get_non_sus_vfsmnt_from_vfsmnt(struct vfsmount *vfsmnt);
@@ -661,6 +660,7 @@ void susfs_update_sus_kstat(void __user **user_info) {
 		}
 	}
 	mutex_unlock(&susfs_mutex_lock_sus_kstat);
+	kfree(new_entry);
 	info.err = -ENOENT;
 
 out_copy_to_user:
@@ -1373,56 +1373,22 @@ static DEFINE_MUTEX(susfs_mutex_lock_priority_uid_filter);
  * Protected by susfs_mutex_lock_priority_uid_filter.
  */
 static char *susfs_priority_app_strings = NULL;
-/* Ensures that there is only one resolving thread running at the same time */
-static atomic_t susfs_priority_app_strings_running = ATOMIC_INIT(0);
 
-/*
- * Switches the selinux domain of the current process to the KernelSU one, so
- * that the data paths of the apps can be accessed despite of the selinux
- * restrictions.
- * The original credentials are returned, they have to be restored with
- * susfs_restore_creds() afterwards.
- * Returns the original credentials on success, NULL on failure.
- */
-static struct cred *susfs_switch_to_ksu_domain(void) {
-	struct cred *orig_cred = NULL;
-	struct cred *cred = NULL;
+/* Borrow the credentials that BakaSU uses for its own package tracker. */
+static const struct cred *susfs_switch_to_ksu_domain(void)
+{
+	const struct cred *saved;
 
-	/* a copy of the current credentials, which is restored later on */
-	orig_cred = prepare_creds();
-	if (!orig_cred) {
-		SUSFS_LOGE("failed to prepare creds!\n");
+	if (!ksu_cred)
 		return NULL;
-	}
 
-	cred = prepare_creds();
-	if (!cred) {
-		SUSFS_LOGE("failed to prepare creds!\n");
-		abort_creds(orig_cred);
-		return NULL;
-	}
+	saved = override_creds(ksu_cred);
+	if (susfs_is_current_ksu_domain())
+		return saved;
 
-	setup_selinux("u:r:ksu:s0", cred);
-	commit_creds(cred);
-
-	if (!susfs_is_current_ksu_domain()) {
-		SUSFS_LOGE("domain is not ksu, restoring the original creds\n");
-		commit_creds(orig_cred);
-		return NULL;
-	}
-
-	return orig_cred;
-}
-
-/*
- * Restores the original credentials that were saved by
- * susfs_switch_to_ksu_domain().
- */
-static void susfs_restore_creds(struct cred *orig_cred) {
-	if (!orig_cred)
-		return;
-
-	commit_creds(orig_cred);
+	revert_creds(saved);
+	SUSFS_LOGE("failed to enter the KernelSU domain\n");
+	return NULL;
 }
 
 /*
@@ -1606,7 +1572,7 @@ void susfs_set_priority_uid_filter(void __user **user_info) {
 	struct susfs_priority_uid_filter_bitmap *new_bitmap = NULL;
 	struct susfs_priority_uid_filter_bitmap *old_bitmap = NULL;
 	char *new_app_strings = NULL;
-	struct cred *orig_cred = NULL;
+	const struct cred *orig_cred;
 	size_t app_str_len = 0;
 	int err = 0;
 	static bool is_uid_filter_set_before = false;
@@ -1665,15 +1631,17 @@ void susfs_set_priority_uid_filter(void __user **user_info) {
 		goto out_free_new_bitmap;
 	}
 
+	mutex_lock(&susfs_mutex_lock_priority_uid_filter);
 	if (is_uid_filter_set_before)
 		SUSFS_LOGI("renewing the priority uid filter\n");
 	err = susfs_parse_priority_app_names(info->app_strings, new_bitmap->bits, true);
 
-	susfs_restore_creds(orig_cred);
-	orig_cred = NULL;
+	revert_creds(orig_cred);
 
-	if (err)
+	if (err) {
+		mutex_unlock(&susfs_mutex_lock_priority_uid_filter);
 		goto out_free_new_bitmap;
+	}
 
 	/*
 	 * Publish the new bitmap and drop the old one.
@@ -1681,7 +1649,6 @@ void susfs_set_priority_uid_filter(void __user **user_info) {
 	 * by RCU, hence the readers always see a consistent bitmap and they
 	 * never access a freed bitmap.
 	 */
-	mutex_lock(&susfs_mutex_lock_priority_uid_filter);
 	old_bitmap = rcu_dereference_protected(priority_uid_filter_bitmap, lockdep_is_held(&susfs_mutex_lock_priority_uid_filter));
 	rcu_assign_pointer(priority_uid_filter_bitmap, new_bitmap);
 	new_bitmap = NULL;
@@ -1693,10 +1660,8 @@ void susfs_set_priority_uid_filter(void __user **user_info) {
 	mutex_unlock(&susfs_mutex_lock_priority_uid_filter);
 
 	/* kfree_call_rcu() in 4.19 does not tolerate a NULL head */
-	if (old_bitmap) {
-		synchronize_rcu();
+	if (old_bitmap)
 		kfree_rcu(old_bitmap, rcu);
-	}
 
 	SUSFS_LOGI("the priority uid filter is set\n");
 	err = 0;
@@ -1717,28 +1682,22 @@ out_copy_to_user:
 }
 
 /*
- * The thread that resolves the uids of the stored app package names again,
- * so that the filter stays up to date when the apps are installed or
- * uninstalled, because the uid of an app changes when it is reinstalled.
+ * Rebuild the filter when packages are installed or removed, since a
+ * reinstalled package may have a different UID.
  */
-static int susfs_priority_app_strings_worker(void *data) {
+static void susfs_priority_app_strings_worker(struct work_struct *work) {
 	struct susfs_priority_uid_filter_bitmap *new_bitmap = NULL;
 	struct susfs_priority_uid_filter_bitmap *old_bitmap = NULL;
-	struct cred *orig_cred = NULL;
+	const struct cred *orig_cred;
 	char *app_strings = NULL;
 	size_t app_str_len = 0;
 	int ret = 0;
 
-	/*
-	 * The data paths of the apps cannot be accessed with the selinux
-	 * restrictions of the default domain of the thread, hence the selinux
-	 * domain is switched to the KernelSU one.
-	 */
 	orig_cred = susfs_switch_to_ksu_domain();
 	if (!orig_cred)
-		goto out;
+		return;
 
-	/* take a snapshot of the stored app package names */
+	/* Keep the selected packages and their replacement bitmap in sync. */
 	mutex_lock(&susfs_mutex_lock_priority_uid_filter);
 	if (susfs_priority_app_strings) {
 		app_str_len = strlen(susfs_priority_app_strings);
@@ -1746,65 +1705,38 @@ static int susfs_priority_app_strings_worker(void *data) {
 		if (app_strings)
 			memcpy(app_strings, susfs_priority_app_strings, app_str_len + 1);
 	}
-	mutex_unlock(&susfs_mutex_lock_priority_uid_filter);
 
 	if (!app_strings)
-		goto out_restore_creds;
+		goto out_unlock;
 
 	new_bitmap = (struct susfs_priority_uid_filter_bitmap *)kzalloc(sizeof(*new_bitmap), GFP_KERNEL);
 	if (!new_bitmap)
-		goto out_restore_creds;
+		goto out_unlock;
 
 	/* the apps that are uninstalled already are skipped */
 	ret = susfs_parse_priority_app_names(app_strings, new_bitmap->bits, true);
 	if (ret)
-		goto out_restore_creds;
+		goto out_unlock;
 
-	/*
-	 * The old bitmap is zeroed and the newly resolved uids are mapped into
-	 * the new one, which is then published to the readers.
-	 */
-	mutex_lock(&susfs_mutex_lock_priority_uid_filter);
 	old_bitmap = rcu_dereference_protected(priority_uid_filter_bitmap, lockdep_is_held(&susfs_mutex_lock_priority_uid_filter));
 	rcu_assign_pointer(priority_uid_filter_bitmap, new_bitmap);
 	new_bitmap = NULL;
-	mutex_unlock(&susfs_mutex_lock_priority_uid_filter);
-
-	/* kfree_call_rcu() in 4.19 does not tolerate a NULL head */
-	if (old_bitmap) {
-		synchronize_rcu();
-		kfree_rcu(old_bitmap, rcu);
-	}
-
 	SUSFS_LOGI("the uids of the priority uid filter are resolved again\n");
 
-out_restore_creds:
-	susfs_restore_creds(orig_cred);
-	orig_cred = NULL;
-out:
-	if (new_bitmap)
-		kfree(new_bitmap);
-	if (app_strings)
-		kvfree(app_strings);
-	atomic_set(&susfs_priority_app_strings_running, 0);
-
-	return ret;
+out_unlock:
+	mutex_unlock(&susfs_mutex_lock_priority_uid_filter);
+	revert_creds(orig_cred);
+	if (old_bitmap)
+		kfree_rcu(old_bitmap, rcu);
+	kfree(new_bitmap);
+	kvfree(app_strings);
 }
 
-/*
- * Resolves the uids of the stored app package names again in a new thread,
- * because the resolving of the uids requires the KernelSU selinux domain,
- * which must not be applied to the calling process.
- */
-void susfs_parse_priority_app_strings(void) {
-	/* do not spawn a new thread if there is already one running */
-	if (atomic_cmpxchg(&susfs_priority_app_strings_running, 0, 1))
-		return;
+static DECLARE_WORK(susfs_priority_app_strings_work, susfs_priority_app_strings_worker);
 
-	if (IS_ERR(kthread_run(susfs_priority_app_strings_worker, NULL, "susfs_gpsp_appstr"))) {
-		atomic_set(&susfs_priority_app_strings_running, 0);
-		SUSFS_LOGE("failed to create the thread susfs_priority_app_strings\n");
-	}
+void susfs_parse_priority_app_strings(void)
+{
+	schedule_work(&susfs_priority_app_strings_work);
 }
 
 /*
@@ -1878,8 +1810,13 @@ void susfs_get_enabled_features(void __user **user_info) {
 	size_t copied_size = 0;
 
 	if (!info) {
-		info->err = -ENOMEM;
-		goto out_copy_to_user;
+		int err = -ENOMEM;
+
+		if (copy_to_user(&((struct st_susfs_enabled_features __user *)*user_info)->err,
+				 &err, sizeof(err)))
+			err = -EFAULT;
+		SUSFS_LOGI("CMD_SUSFS_SHOW_ENABLED_FEATURES -> ret: %d\n", err);
+		return;
 	}
 
 	if (copy_from_user(info, (struct st_susfs_enabled_features __user*)*user_info, sizeof(struct st_susfs_enabled_features))) {

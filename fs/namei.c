@@ -44,6 +44,10 @@
 #include <linux/susfs_def.h>
 #endif
 
+#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
+#include <linux/susfs.h>
+#endif
+
 #include "internal.h"
 #include "mount.h"
 
@@ -5050,6 +5054,17 @@ retry_deleg:
 	error = vfs_rename2(old_path.mnt, old_path.dentry->d_inode, old_dentry,
 			   new_path.dentry->d_inode, new_dentry,
 			   &delegated_inode, flags);
+#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
+	/* Queue a refresh once the package manager has replaced the list. */
+	if (!error && new_last.len == sizeof("packages.list") - 1 &&
+	    !memcmp(new_last.name, "packages.list", new_last.len)) {
+		char dir_buf[sizeof("/data/system")];
+		char *dir = d_path(&new_path, dir_buf, sizeof(dir_buf));
+
+		if (!IS_ERR(dir) && !strcmp(dir, "/data/system"))
+			susfs_parse_priority_app_strings();
+	}
+#endif
 exit5:
 	dput(new_dentry);
 exit4:

@@ -7,6 +7,8 @@ set -eo pipefail
 #   Bakasu  branch -> "Bakasu"
 #   HyperSU branch -> "HyperSU"
 KSU_FLAVOR="Bakasu"
+# BakaSU main, 2026-11-10. The SUSFS glue below is tied to this revision.
+BAKASU_REVISION="548d1dda060ca198823d8808804d01f5209ef4a9"
 
 if [ -z "$1" ]; then
     echo "[!] Error: No device specified."
@@ -245,9 +247,23 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "==========================================="
     echo " [*] Initializing KernelSU  Setup"
     echo "==========================================="
-    echo "[*] Downloading and running KernelSU remote setup script..."
-    curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
-    echo "[+] KernelSU setup finished."
+    BAKASU_PATCH="$KERNEL_DIR/scripts/bakasu-susfs-2.4.patch"
+    if [ "$(git -C KernelSU rev-parse HEAD 2>/dev/null || true)" != "$BAKASU_REVISION" ] ||
+        [ ! -f drivers/kernelsu/Kconfig ] ||
+        ! grep -Fq 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig ||
+        ! grep -Fq 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile; then
+        echo "[*] Setting up BakaSU at $BAKASU_REVISION..."
+        curl -fLSs --retry 3 "https://raw.githubusercontent.com/Baka-SU/BakaSU/$BAKASU_REVISION/kernel/setup.sh" |
+            bash -s -- "$BAKASU_REVISION"
+    fi
+    if [ "$(git -C KernelSU rev-parse HEAD)" != "$BAKASU_REVISION" ]; then
+        echo "[!] BakaSU checkout does not match $BAKASU_REVISION." >&2
+        exit 1
+    fi
+    if ! git -C KernelSU apply --reverse --check "$BAKASU_PATCH" 2>/dev/null; then
+        git -C KernelSU apply "$BAKASU_PATCH"
+    fi
+    echo "[+] BakaSU and SUSFS 2.4 integration ready."
 fi
 
 echo "==========================================="
