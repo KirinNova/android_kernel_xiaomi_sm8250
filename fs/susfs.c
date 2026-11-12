@@ -32,6 +32,7 @@
 
 extern bool susfs_is_current_ksu_domain(void);
 extern struct cred *ksu_cred;
+extern void setup_selinux(const char *domain, struct cred *cred);
 extern int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt);
 extern struct vfsmount *susfs_get_non_sus_vfsmnt_from_vfsmnt(struct vfsmount *vfsmnt);
 
