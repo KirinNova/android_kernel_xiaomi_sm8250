@@ -1732,15 +1732,12 @@ static int exec_binprm(struct linux_binprm *bprm)
  * sys_execve() executes a new program.
  */
 #ifdef CONFIG_KSU_SUSFS
-extern struct static_key_true ksu_su_compat_enabled;
-extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
-extern bool __ksu_is_allow_uid_for_current(uid_t uid);
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
-			void *envp, int *flags);
-extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv,
-				void *envp, int *flags);
-extern int ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv,
-			void *envp, int *flags, int *retval);
+			      void *envp, int *flags);
+extern int ksu_handle_post_execveat(int *fd, struct filename **filename_ptr, void *argv,
+				   void *envp, int *flags, int *retval);
+extern int ksu_susfs_setup_preinit(struct filename **filename, struct user_arg_ptr *argv);
+extern bool ksu_susfs_abort_preinit(struct filename **filename, int fd, int error);
 #endif
 
 static int __do_execve_file(int fd, struct filename *filename,
@@ -1754,22 +1751,19 @@ static int __do_execve_file(int fd, struct filename *filename,
 	int retval;
 
 #ifdef CONFIG_KSU_SUSFS
+	struct mm_struct *preinit_mm = NULL;
 	bool is_su_session = false;
-#endif // #ifdef CONFIG_KSU_SUSFS
+	bool retry_preinit = false;
+	int preinit_fd = -1;
+#endif
 
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
 #ifdef CONFIG_KSU_SUSFS
-	if (likely(susfs_is_current_proc_no_su()))
-		goto orig_flow;
+	if (filename && !susfs_is_current_proc_no_su())
+		is_su_session = !ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
 
-	if (static_branch_likely(&ksu_su_compat_enabled)) {
-		if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted))
-			is_su_session = !ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-		else
-			is_su_session = !ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
-	}
-orig_flow:
+retry_exec:
 #endif
 
 	/*
@@ -1803,6 +1797,15 @@ orig_flow:
 
 	check_unsafe_exec(bprm);
 	current->in_execve = 1;
+
+#ifdef CONFIG_KSU_SUSFS
+	if (unlikely(current->pid == 1) && filename && !file &&
+	    !is_su_session && !retry_preinit &&
+	    (fd == AT_FDCWD || !(flags & AT_EMPTY_PATH))) {
+		preinit_mm = current->mm;
+		preinit_fd = ksu_susfs_setup_preinit(&filename, &argv);
+	}
+#endif
 
 	if (!file)
 		file = do_open_execat(fd, filename, flags);
@@ -1889,6 +1892,10 @@ orig_flow:
 		goto out;
 
 	/* execve succeeded */
+#ifdef CONFIG_KSU_SUSFS
+	if (unlikely(is_su_session))
+		ksu_handle_post_execveat(&fd, &filename, &argv, &envp, &flags, &retval);
+#endif
 	current->fs->in_exec = 0;
 	current->in_execve = 0;
 	membarrier_execve(current);
@@ -1914,9 +1921,10 @@ out_unmark:
 	current->in_execve = 0;
 
 #ifdef CONFIG_KSU_SUSFS
-	if (unlikely(is_su_session))
-		(void)ksu_handle_post_execveat_sucompat(&fd, &filename, &argv, &envp, &flags, &retval);
-#endif // #ifdef CONFIG_KSU_SUSFS
+	/* Retry stock init only if the failed runner did not replace the mm. */
+	if (unlikely(preinit_fd >= 0) && current->mm == preinit_mm)
+		retry_preinit = ksu_susfs_abort_preinit(&filename, preinit_fd, retval);
+#endif
 
 out_free:
 	free_bprm(bprm);
@@ -1925,6 +1933,14 @@ out_free:
 out_files:
 	if (displaced)
 		reset_files_struct(displaced);
+#ifdef CONFIG_KSU_SUSFS
+	if (unlikely(retry_preinit && preinit_fd >= 0)) {
+		preinit_fd = -1;
+		file = NULL;
+		pathbuf = NULL;
+		goto retry_exec;
+	}
+#endif
 out_ret:
 	if (filename)
 		putname(filename);
