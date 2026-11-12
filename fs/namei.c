@@ -45,7 +45,7 @@
 #endif
 
 #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
-#include <linux/susfs.h>
+extern void susfs_parse_priority_app_strings(void);
 #endif
 
 #include "internal.h"
@@ -5058,7 +5058,7 @@ retry_deleg:
 	/* Queue a refresh once the package manager has replaced the list. */
 	if (!error && new_last.len == sizeof("packages.list") - 1 &&
 	    !memcmp(new_last.name, "packages.list", new_last.len)) {
-		char dir_buf[sizeof("/data/system")];
+		char dir_buf[64];
 		char *dir = d_path(&new_path, dir_buf, sizeof(dir_buf));
 
 		if (!IS_ERR(dir) && !strcmp(dir, "/data/system"))

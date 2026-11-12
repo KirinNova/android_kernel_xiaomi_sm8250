@@ -18,6 +18,7 @@
 #include <linux/kthread.h>
 #include <linux/delay.h>
 #include <linux/workqueue.h>
+#include <linux/compiler.h>
 #include <linux/fsnotify_backend.h>
 #include <linux/jump_label.h>
 #include <linux/version.h> // We need check kernel version.
@@ -2127,8 +2128,25 @@ static void susfs_run_extra_works(struct work_struct *work) {
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 }
 
+/*
+ * BakaSU only compiles the real preinit helpers when UAPI headers are
+ * available. Provide weak fallbacks so fs/exec.c always links on 4.19.
+ */
+int __weak ksu_setup_preinit_file(struct filename **filename_ptr, void *argv_user)
+{
+	return 0;
+}
+
+int __weak ksu_preinit_handle_post_execveat(int *fd, struct filename **filename_ptr,
+					    void *argv_user, void *envp_user,
+					    int *flags, int *retval, int *preinit_fd)
+{
+	return 0;
+}
+
 /* susfs_init */
-void susfs_init(void) {\
+void susfs_init(void)
+{
 	SUSFS_LOGI("Initializing susfs_extra_works\n");
 	INIT_WORK(&susfs_extra_works, susfs_run_extra_works);
 	SUSFS_LOGI("susfs is initialized! version: " SUSFS_VERSION " \n");

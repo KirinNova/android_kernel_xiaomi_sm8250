@@ -260,8 +260,13 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
         echo "[!] BakaSU checkout does not match $BAKASU_REVISION." >&2
         exit 1
     fi
-    if ! git -C KernelSU apply --reverse --check "$BAKASU_PATCH" 2>/dev/null; then
-        git -C KernelSU apply "$BAKASU_PATCH"
+    if ! git -C KernelSU apply --reverse --check "$BAKASU_PATCH" >/dev/null 2>&1; then
+        echo "[*] Applying bakasu-susfs-2.4.patch..."
+        if ! git -C KernelSU apply --whitespace=nowarn "$BAKASU_PATCH"; then
+            echo "[!] Failed to apply $BAKASU_PATCH" >&2
+            git -C KernelSU apply --check --verbose "$BAKASU_PATCH" || true
+            exit 1
+        fi
     fi
     echo "[+] BakaSU and SUSFS 2.4 integration ready."
 fi
@@ -398,7 +403,19 @@ build_target() {
         scripts/config --file "${OUT_DIR}/.config" \
             -e KSU \
             -e THREAD_INFO_IN_TASK \
-            -e KSU_SUSFS
+            -d KSU_TRACEPOINT_HOOK \
+            -d KSU_MANUAL_HOOK \
+            -e KSU_SUSFS \
+            -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_SPOOF_UNAME \
+            -e KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_SUSFS_OPEN_REDIRECT \
+            -e KSU_SUSFS_SUS_MAP \
+            -e KSU_SUSFS_PRIORITY_UID_FILTER
     fi
 
     configure_droidspaces_non_gki "${OUT_DIR}"
@@ -515,6 +532,16 @@ build_target() {
 
     echo "[*] Updating config (make olddefconfig)..."
     make "${MAKE_OPTS[@]}" olddefconfig
+
+    if [ "$ENABLE_KSU" -eq 1 ]; then
+        if grep -qx "CONFIG_KSU_SUSFS=y" "${OUT_DIR}/.config"; then
+            echo "[+] CONFIG_KSU_SUSFS=y verified after olddefconfig."
+        else
+            echo "ERROR: CONFIG_KSU_SUSFS=y did not survive olddefconfig."
+            grep "KSU" "${OUT_DIR}/.config" || true
+            exit 1
+        fi
+    fi
 
     if grep -qx "CONFIG_KERNEL_SECURITY_CHECK=y" "${OUT_DIR}/.config"; then
         echo "[+] KERNEL_SECURITY_CHECK=y verified after olddefconfig."
