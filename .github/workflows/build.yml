@@ -127,7 +127,7 @@ jobs:
 
       - name: Modify kernel version string (Remove cip/st extra suffix)
         run: |
-          sed -i 's|^EXTRAVERSION =.*|EXTRAVERSION = -Ikun-KirinNova|' Makefile
+          sed -i 's|^EXTRAVERSION =.*|EXTRAVERSION = -Customised-KirinNova|' Makefile
             
           find arch/arm64/configs -maxdepth 1 -type f -name "*defconfig" | while read -r file; do
             sed -i '/CONFIG_LOCALVERSION_AUTO/d' "$file"
