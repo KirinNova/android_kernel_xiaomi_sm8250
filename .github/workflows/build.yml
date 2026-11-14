@@ -3,7 +3,7 @@ name: Build Kernel
 on:
   push:
     branches:
-      - HyperSU
+      - BakaSU
   workflow_dispatch:
     inputs:
       device:
@@ -15,7 +15,7 @@ on:
           - alioth
           - lmi
       ksu:
-        description: 'Enable KernelSU (HyperSU)'
+        description: 'Enable BakaSU'
         required: true
         type: boolean
         default: true
@@ -197,7 +197,7 @@ jobs:
           body: |
             Automatic kernel build.
             - **Device:** ${{ github.event.inputs.device || 'alioth' }}
-            - **KernelSU:** ${{ github.event.inputs.ksu || 'true' }}
+            - **BakaSU:** ${{ github.event.inputs.ksu || 'true' }}
             - **Target OS:** ${{ github.event.inputs.target_os || 'miui' }}
           draft: false
           prerelease: false
