@@ -5,8 +5,8 @@ set -eo pipefail
 # KernelSU flavour shipped by this branch.  Used in the packaged zip filename
 # so an archive can be traced back to the branch that produced it.
 #   Bakasu  branch -> "Bakasu"
-#   HyperSU branch -> "HyperSU"
-KSU_FLAVOR="HyperSU"
+#   BakaSU  branch -> "BakaSU"
+KSU_FLAVOR="BakaSU"
 
 if [ -z "$1" ]; then
     echo "[!] Error: No device specified."
@@ -243,11 +243,11 @@ configure_droidspaces_non_gki() {
 
 if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "==========================================="
-    echo " [*] Initializing KernelSU  Setup"
+    echo " [*] Initializing BakaSU Setup"
     echo "==========================================="
-    echo "[*] Downloading and running KernelSU remote setup script..."
-    curl -LSs "https://raw.githubusercontent.com/HyperSU-Team/HyperSU/main/kernel/setup.sh" | bash
-    echo "[+] KernelSU setup finished."
+    echo "[*] Downloading and running BakaSU remote setup script..."
+    curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
+    echo "[+] BakaSU setup finished."
 fi
 
 echo "==========================================="
@@ -378,7 +378,7 @@ build_target() {
     scripts/config --file "${OUT_DIR}/.config" -e KERNEL_SECURITY_CHECK
 
     if [ "$ENABLE_KSU" -eq 1 ]; then
-        echo "[*] Injecting KernelSU & SUSFS configurations..."
+        echo "[*] Injecting BakaSU & SUSFS configurations..."
         scripts/config --file "${OUT_DIR}/.config" \
             -e KSU \
             -e THREAD_INFO_IN_TASK \
@@ -554,7 +554,7 @@ build_target() {
         fi
 
         # The archive name carries the branch flavour (KSU_FLAVOR) instead of
-        # a fixed prefix, so Bakasu and HyperSU builds are distinguishable.
+        # a fixed prefix, so Bakasu and BakaSU builds are distinguishable.
         local KSU_ZIP_STR="${KSU_FLAVOR}-NoKernelSU"
         if [ "$ENABLE_KSU" -eq 1 ]; then
             KSU_ZIP_STR="${KSU_FLAVOR}-SuSFS"
