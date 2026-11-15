@@ -1164,7 +1164,7 @@ static inline void get_esr_meas_current(int curr_ma, u8 *val)
 static int fg_gen4_get_power(struct fg_gen4_chip *chip, int *val, bool average)
 {
 	struct fg_dev *fg = &chip->fg;
-	int rc, v_min, v_pred, esr_uohms, rslow_uohms;
+	int rc, v_min, v_pred, esr_uohms, rslow_uohms, divisor;
 	s64 power;
 
 	rc = fg_get_sram_prop(fg, FG_SRAM_VOLTAGE_PRED, &v_pred);
@@ -1186,10 +1186,12 @@ static int fg_gen4_get_power(struct fg_gen4_chip *chip, int *val, bool average)
 		return rc;
 	}
 
-	if (average)
-		power = div_s64(power, esr_uohms + rslow_uohms);
-	else
-		power = div_s64(power, esr_uohms);
+	divisor = average ? esr_uohms + rslow_uohms : esr_uohms;
+	if (!divisor) {
+		pr_err("Invalid ESR/RSLOW, cannot calculate power\n");
+		return -EINVAL;
+	}
+	power = div_s64(power, divisor);
 
 	pr_debug("V_min: %d V_pred: %d ESR: %d Rslow: %d power: %lld\n", v_min,
 		v_pred, esr_uohms, rslow_uohms, power);
@@ -1233,6 +1235,7 @@ static int fg_gen4_get_prop_soc_scale(struct fg_gen4_chip *chip)
 
 	/* Exit rapid soc decrease mode when battery voltage > 3700mV to recover real soc value */
 	if (chip->vbatt_avg > 3650) {
+		chip->vbat_critical_low_count = 0;
 		if (chip->dt.rapid_soc_dec_en) {
 			if(chip->rapid_soc_dec_en) {
 				fg_dbg(fg, FG_STATUS, "Vbatt > 3650, exit rapid soc decrease\n", fg->charge_status);
@@ -7308,7 +7311,8 @@ static void soc_monitor_work(struct work_struct *work)
 	if (rc < 0)
 		pr_err("failed to get battery temperature, rc=%d\n", rc);
 
-	if (chip->rapid_soc_dec_en || chip->vbatt_low) {
+	if (chip->rapid_soc_dec_en || chip->vbatt_low ||
+			chip->vbat_critical_low_count) {
 		rc = fg_gen4_get_prop_soc_scale(chip);
 		if (rc < 0)
 			pr_err("Failed to get soc scale props, rc=%d\n", rc);
