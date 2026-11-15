@@ -1206,7 +1206,7 @@ static int fg_gen4_get_power(struct fg_gen4_chip *chip, int *val, bool average)
 static int fg_gen4_get_prop_soc_scale(struct fg_gen4_chip *chip)
 {
 	struct fg_dev *fg = &chip->fg;
-	int rc;
+	int rc, ocv;
 
 	rc = fg_get_sram_prop(fg, FG_SRAM_VBAT_FLT, &chip->vbatt_avg);
 	if (rc < 0) {
@@ -1233,15 +1233,16 @@ static int fg_gen4_get_prop_soc_scale(struct fg_gen4_chip *chip)
 	fg_dbg(fg, FG_FVSS, "Vbatt now=%d Vbatt avg=%d Vbatt res=%d\n",
 		chip->vbatt_now, chip->vbatt_avg, chip->vbatt_res);
 
+	rc = fg_get_sram_prop(fg, FG_SRAM_OCV, &ocv);
+	if (rc < 0) {
+		ocv = 0;
+		rc = 0;
+	}
+	ocv /= 1000;
+
 	/* Exit rapid soc decrease mode when battery voltage > 3700mV to recover real soc value */
 	if (chip->vbatt_avg > 3650) {
 		chip->vbat_critical_low_count = 0;
-		if (chip->vbatt_low) {
-			fg_dbg(fg, FG_STATUS,
-				"Vbatt > 3650, reset vbatt_low = false\n",
-				fg->charge_status);
-			chip->vbatt_low = false;
-		}
 		if (chip->dt.rapid_soc_dec_en && chip->rapid_soc_dec_en) {
 			fg_dbg(fg, FG_STATUS,
 				"Vbatt > 3650, exit rapid soc decrease\n",
@@ -1251,10 +1252,32 @@ static int fg_gen4_get_prop_soc_scale(struct fg_gen4_chip *chip)
 				pr_err("Error in configuring for rapid SOC reduction rc:%d\n",
 					rc);
 			chip->rapid_soc_dec_en = false;
+			rc = 0;
 		}
-	} else if (fg->charge_status != POWER_SUPPLY_STATUS_CHARGING &&
-			chip->vbatt_avg <= chip->dt.cutoff_volt_mv) {
-		chip->vbatt_low = true;
+	}
+
+	if (chip->vbatt_low &&
+	    ((ocv > 0 && ocv > 3650) ||
+	     (!ocv && chip->vbatt_avg > 3650))) {
+		fg_dbg(fg, FG_STATUS, "OCV %d recovered, reset vbatt_low\n",
+			ocv);
+		chip->vbatt_low = false;
+		if (batt_psy_initialized(fg))
+			power_supply_changed(fg->batt_psy);
+	}
+
+	if (fg->soc_reporting_ready && ocv > 0 &&
+			fg->charge_status == POWER_SUPPLY_STATUS_DISCHARGING &&
+			ocv <= chip->dt.cutoff_volt_mv) {
+		if (!chip->vbatt_low) {
+			fg_dbg(fg, FG_STATUS,
+				"OCV %d <= cutoff %d, force empty\n",
+				ocv, chip->dt.cutoff_volt_mv);
+			chip->vbatt_low = true;
+			fg->empty_restart_fg = false;
+			if (batt_psy_initialized(fg))
+				power_supply_changed(fg->batt_psy);
+		}
 	}
 
 	return rc;
@@ -7318,10 +7341,6 @@ static void soc_monitor_work(struct work_struct *work)
 	if (rc < 0)
 		pr_err("failed to get battery temperature, rc=%d\n", rc);
 
-	rc = fg_gen4_get_prop_soc_scale(chip);
-	if (rc < 0)
-		pr_err("Failed to get soc scale props, rc=%d\n", rc);
-
 	if (chip->dt.cutoff_voltage_adjust_enable) {
 		if (fg->param.batt_temp < LOW_DISCHARGE_TEMP_TRH ) {
 			chip->dt.cutoff_volt_mv = LOW_TEMP_CUTOFF_VOL_MV;
@@ -7334,6 +7353,10 @@ static void soc_monitor_work(struct work_struct *work)
 		if (rc < 0)
 			pr_err("fg_dynamic_set_cutoff_voltage set failed\n");
 	}
+
+	rc = fg_gen4_get_prop_soc_scale(chip);
+	if (rc < 0)
+		pr_err("Failed to get soc scale props, rc=%d\n", rc);
 
 	if (fg->soc_reporting_ready)
 		fg_battery_soc_smooth_tracking(chip);
