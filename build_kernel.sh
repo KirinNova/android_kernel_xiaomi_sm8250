@@ -387,7 +387,7 @@ build_target() {
 
     configure_droidspaces_non_gki "${OUT_DIR}"
 
-    echo "[*] Injecting user-specified custom options (BBG, REKERNEL, NETFILTER, BBR, etc.)..."
+    echo "[*] Injecting user-specified custom options (BBG, REKERNEL, NETFILTER, etc.)..."
     scripts/config --file "${OUT_DIR}/.config" \
         -e BBG \
         -e REKERNEL \
@@ -439,12 +439,10 @@ build_target() {
         -e NET_SCH_FQ_CODEL \
         -e WIREGUARD \
         -e TCP_CONG_ADVANCED \
-        -e TCP_CONG_BBR \
         -e TCP_CONG_CUBIC \
         -e TCP_CONG_WESTWOOD \
         -e TCP_CONG_BIC \
         -e TCP_CONG_HTCP \
-        -e DEFAULT_BBR \
         -e IOSCHED_DEADLINE \
         -e IOSCHED_CFQ \
         -e MQ_IOSCHED_DEADLINE \
@@ -452,8 +450,6 @@ build_target() {
         -e IOSCHED_BFQ \
         -e BFQ_GROUP_IOSCHED \
         -e DEFAULT_DEADLINE
-
-    scripts/config --file "${OUT_DIR}/.config" --set-str DEFAULT_NET_TCP_ALG "bbr" 2>/dev/null || true
 
     if [ "$OS_TYPE" == "miui" ]; then
         echo "[*] Injecting MIUI specific configurations..."
