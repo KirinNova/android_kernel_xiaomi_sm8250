@@ -251,6 +251,16 @@ static DEFINE_MUTEX(susfs_mutex_lock_sus_path);
 static LIST_HEAD(LH_SUS_PATH_LOOP);
 const struct qstr susfs_fake_qstr_name = QSTR_INIT("..5.u.S", 7); // used to re-test the dcache lookup, make sure you don't have file named like this!!
 
+/*
+ * Resolves the real data path of the current /sdcard view, so that readdir
+ * can look the inodes up in the underlying filesystem superblock instead of
+ * the FUSE one.  The FUSE inodes carry no AS_FLAGS_SUS_PATH bit, so without
+ * this the sus paths below /sdcard would stay visible.
+ */
+int susfs_get_data_path(struct path *path) {
+	return kern_path("/data", LOOKUP_FOLLOW, path);
+}
+
 void susfs_add_sus_path(void __user **user_info) {
 	struct st_susfs_sus_path info = {0};
 	struct path path;
