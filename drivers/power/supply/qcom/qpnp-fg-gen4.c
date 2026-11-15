@@ -1236,19 +1236,25 @@ static int fg_gen4_get_prop_soc_scale(struct fg_gen4_chip *chip)
 	/* Exit rapid soc decrease mode when battery voltage > 3700mV to recover real soc value */
 	if (chip->vbatt_avg > 3650) {
 		chip->vbat_critical_low_count = 0;
-		if (chip->dt.rapid_soc_dec_en) {
-			if(chip->rapid_soc_dec_en) {
-				fg_dbg(fg, FG_STATUS, "Vbatt > 3650, exit rapid soc decrease\n", fg->charge_status);
-				rc = fg_gen4_rapid_soc_config(chip, false);
-				if (rc < 0)
-					pr_err("Error in configuring for rapid SOC reduction rc:%d\n",
-						rc);
-				chip->rapid_soc_dec_en = false;
-			}
-		} else if (chip->vbatt_low) {
-			fg_dbg(fg, FG_STATUS, "Vbatt > 3650, reset vbatt_low = false\n", fg->charge_status);
+		if (chip->vbatt_low) {
+			fg_dbg(fg, FG_STATUS,
+				"Vbatt > 3650, reset vbatt_low = false\n",
+				fg->charge_status);
 			chip->vbatt_low = false;
 		}
+		if (chip->dt.rapid_soc_dec_en && chip->rapid_soc_dec_en) {
+			fg_dbg(fg, FG_STATUS,
+				"Vbatt > 3650, exit rapid soc decrease\n",
+				fg->charge_status);
+			rc = fg_gen4_rapid_soc_config(chip, false);
+			if (rc < 0)
+				pr_err("Error in configuring for rapid SOC reduction rc:%d\n",
+					rc);
+			chip->rapid_soc_dec_en = false;
+		}
+	} else if (fg->charge_status != POWER_SUPPLY_STATUS_CHARGING &&
+			chip->vbatt_avg <= chip->dt.cutoff_volt_mv) {
+		chip->vbatt_low = true;
 	}
 
 	return rc;
@@ -5190,7 +5196,8 @@ static int fg_psy_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CAPACITY:
 		rc = fg_gen4_get_prop_capacity(fg, &pval->intval);
 		//Using smooth battery capacity.
-		if (fg->param.batt_soc >= 0 && !chip->rapid_soc_dec_en && !chip->soc_scale_mode)
+		if (fg->param.batt_soc >= 0 && !chip->rapid_soc_dec_en &&
+				!chip->soc_scale_mode && !chip->vbatt_low)
 			pval->intval = fg->param.batt_soc;
 
 		if (chip->dt.fg_increase_100soc_time) {
@@ -7311,12 +7318,9 @@ static void soc_monitor_work(struct work_struct *work)
 	if (rc < 0)
 		pr_err("failed to get battery temperature, rc=%d\n", rc);
 
-	if (chip->rapid_soc_dec_en || chip->vbatt_low ||
-			chip->vbat_critical_low_count) {
-		rc = fg_gen4_get_prop_soc_scale(chip);
-		if (rc < 0)
-			pr_err("Failed to get soc scale props, rc=%d\n", rc);
-	}
+	rc = fg_gen4_get_prop_soc_scale(chip);
+	if (rc < 0)
+		pr_err("Failed to get soc scale props, rc=%d\n", rc);
 
 	if (chip->dt.cutoff_voltage_adjust_enable) {
 		if (fg->param.batt_temp < LOW_DISCHARGE_TEMP_TRH ) {
