@@ -319,6 +319,16 @@ int security_context_to_sid_force(struct selinux_state *state,
 				  const char *scontext, u32 scontext_len,
 				  u32 *sid);
 
+#ifdef CONFIG_KSU_SUSFS
+int susfs_security_context_to_sid(struct selinux_state *state,
+					const char *scontext, u32 scontext_len,
+					u32 *out_sid, gfp_t gfp);
+
+int susfs_security_context_to_sid_force(struct selinux_state *state,
+					  const char *scontext, u32 scontext_len,
+					  u32 *sid);
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 int security_get_user_sids(struct selinux_state *state,
 			   u32 callsid, char *username,
 			   u32 **sids, u32 *nel);
