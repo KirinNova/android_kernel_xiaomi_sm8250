@@ -193,6 +193,57 @@ void susfs_spoof_avd_allowed_rcu(u32 s_type, u32 t_type, u32 c_type, u32 *avd_al
 	}
 }
 
+#if defined(CONFIG_KSU_SUSFS_SUS_PATH) || defined(CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER)
+/*
+ * Switches the selinux domain of the current process to the KernelSU one, so
+ * that the data paths of the apps can be accessed despite of the selinux
+ * restrictions.
+ * The original credentials are returned, they have to be restored with
+ * susfs_restore_creds() afterwards.
+ * Returns the original credentials on success, NULL on failure.
+ */
+static struct cred *susfs_switch_to_ksu_domain(void) {
+	struct cred *orig_cred = NULL;
+	struct cred *cred = NULL;
+
+	/* a copy of the current credentials, which is restored later on */
+	orig_cred = prepare_creds();
+	if (!orig_cred) {
+		SUSFS_LOGE("failed to prepare creds!\n");
+		return NULL;
+	}
+
+	cred = prepare_creds();
+	if (!cred) {
+		SUSFS_LOGE("failed to prepare creds!\n");
+		abort_creds(orig_cred);
+		return NULL;
+	}
+
+	setup_selinux("u:r:ksu:s0", cred);
+	commit_creds(cred);
+
+	if (!susfs_is_current_ksu_domain()) {
+		SUSFS_LOGE("domain is not ksu, restoring the original creds\n");
+		commit_creds(orig_cred);
+		return NULL;
+	}
+
+	return orig_cred;
+}
+
+/*
+ * Restores the original credentials that were saved by
+ * susfs_switch_to_ksu_domain().
+ */
+static void susfs_restore_creds(struct cred *orig_cred) {
+	if (!orig_cred)
+		return;
+
+	commit_creds(orig_cred);
+}
+#endif // #if defined(CONFIG_KSU_SUSFS_SUS_PATH) || defined(CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER)
+
 /* sus_path */
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 DEFINE_STATIC_SRCU(susfs_srcu_sus_path_loop);
@@ -1776,55 +1827,6 @@ static DEFINE_MUTEX(susfs_mutex_lock_priority_uid_filter);
 static char *susfs_priority_app_strings = NULL;
 /* Ensures that there is only one resolving thread running at the same time */
 static atomic_t susfs_priority_app_strings_running = ATOMIC_INIT(0);
-
-/*
- * Switches the selinux domain of the current process to the KernelSU one, so
- * that the data paths of the apps can be accessed despite of the selinux
- * restrictions.
- * The original credentials are returned, they have to be restored with
- * susfs_restore_creds() afterwards.
- * Returns the original credentials on success, NULL on failure.
- */
-static struct cred *susfs_switch_to_ksu_domain(void) {
-	struct cred *orig_cred = NULL;
-	struct cred *cred = NULL;
-
-	/* a copy of the current credentials, which is restored later on */
-	orig_cred = prepare_creds();
-	if (!orig_cred) {
-		SUSFS_LOGE("failed to prepare creds!\n");
-		return NULL;
-	}
-
-	cred = prepare_creds();
-	if (!cred) {
-		SUSFS_LOGE("failed to prepare creds!\n");
-		abort_creds(orig_cred);
-		return NULL;
-	}
-
-	setup_selinux("u:r:ksu:s0", cred);
-	commit_creds(cred);
-
-	if (!susfs_is_current_ksu_domain()) {
-		SUSFS_LOGE("domain is not ksu, restoring the original creds\n");
-		commit_creds(orig_cred);
-		return NULL;
-	}
-
-	return orig_cred;
-}
-
-/*
- * Restores the original credentials that were saved by
- * susfs_switch_to_ksu_domain().
- */
-static void susfs_restore_creds(struct cred *orig_cred) {
-	if (!orig_cred)
-		return;
-
-	commit_creds(orig_cred);
-}
 
 /*
  * Checks whether the given string is a valid app package name.
