@@ -16,12 +16,6 @@
 #define SUSFS_VARIANT "GKI"
 #endif
 
-/*********/
-/* MACRO */
-/*********/
-#define getname_safe(name) (name == NULL ? ERR_PTR(-EINVAL) : getname(name))
-#define putname_safe(name) (IS_ERR(name) ? NULL : putname(name))
-
 /********/
 /* ENUM */
 /********/
@@ -50,7 +44,13 @@ struct st_susfs_sus_path_list {
 	struct st_susfs_sus_path                info;
 	char                                    target_pathname[SUSFS_MAX_LEN_PATHNAME];
 };
-#endif
+
+/* sus_path uid filter */
+struct st_susfs_sus_path_uid_filter {
+	char                                    app_strings[SUSFS_APP_STR_BUF_SIZE];
+	int                                     err;
+};
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 
 /* sus_mount */
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
@@ -169,7 +169,6 @@ struct st_susfs_avc_log_spoofing {
 
 /* getpriority uid filter */
 #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
-#define SUSFS_APP_STR_BUF_SIZE 65535
 struct st_susfs_priority_uid_filter {
 	char                                    app_strings[SUSFS_APP_STR_BUF_SIZE];
 	int                                     err;
@@ -201,7 +200,9 @@ struct st_susfs_version {
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 void susfs_add_sus_path(void __user **user_info);
 void susfs_add_sus_path_loop(void __user **user_info);
-#endif
+void susfs_set_sus_path_uid_filter(void __user **user_info);
+void susfs_parse_sus_path_app_strings(void);
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 
 /* sus_mount */
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
