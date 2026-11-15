@@ -1039,9 +1039,6 @@ static int fg_gen4_get_prop_capacity(struct fg_dev *fg, int *val)
 		return 0;
 	}
 
-	if (fg->empty_restart_fg && (msoc == 0))
-		msoc = EMPTY_REPORT_SOC;
-
 	if (chip->soc_scale_mode) {
 		mutex_lock(&chip->soc_scale_lock);
 		*val = chip->soc_scale_msoc;
@@ -1054,6 +1051,13 @@ static int fg_gen4_get_prop_capacity(struct fg_dev *fg, int *val)
 			*val = fg->maint_soc;
 		else
 			*val = msoc;
+
+		if (fg->empty_restart_fg) {
+			if (*val == 0)
+				*val = EMPTY_REPORT_SOC;
+			else
+				fg->empty_restart_fg = false;
+		}
 	}
 
 	return 0;
@@ -3591,14 +3595,14 @@ static int fg_gen4_validate_soc_scale_mode(struct fg_gen4_chip *chip)
 	struct fg_dev *fg = &chip->fg;
 	int rc, vbatt_scale_mv;
 
-	if (!chip->dt.soc_scale_mode)
-		return 0;
-
 	rc = fg_gen4_get_prop_soc_scale(chip);
 	if (rc < 0) {
 		pr_err("Failed to get soc scale props\n");
 		goto fail_soc_scale;
 	}
+
+	if (!chip->dt.soc_scale_mode)
+		return 0;
 
 	rc = fg_get_msoc(fg, &chip->msoc_actual);
 	if (rc < 0) {
@@ -5006,7 +5010,7 @@ static int fg_gen4_set_vbatt_full_vol(struct fg_dev *fg, bool enable_ffc)
 		volt = fg->bp.vbatt_full_mv;
 
 	if (volt < 0)
-		return rc;
+		return -EINVAL;
 
 	rc = fg_set_constant_chg_voltage(fg, volt * 1000);
 	if (rc < 0) {
@@ -5199,6 +5203,8 @@ static int fg_psy_get_property(struct power_supply *psy,
 				else
 					shutdown_voltage = SHUTDOWN_DELAY_VOL;
 				rc = fg_get_battery_voltage(fg, &vbatt_uv);
+				if (rc < 0)
+					break;
 				if (vbatt_uv/1000 > shutdown_voltage
 					&& fg->charge_status != POWER_SUPPLY_STATUS_CHARGING) {
 					fg->shutdown_delay = true;
@@ -7301,6 +7307,12 @@ static void soc_monitor_work(struct work_struct *work)
 	rc = fg_gen4_get_battery_temp(fg, &fg->param.batt_temp);
 	if (rc < 0)
 		pr_err("failed to get battery temperature, rc=%d\n", rc);
+
+	if (chip->rapid_soc_dec_en || chip->vbatt_low) {
+		rc = fg_gen4_get_prop_soc_scale(chip);
+		if (rc < 0)
+			pr_err("Failed to get soc scale props, rc=%d\n", rc);
+	}
 
 	if (chip->dt.cutoff_voltage_adjust_enable) {
 		if (fg->param.batt_temp < LOW_DISCHARGE_TEMP_TRH ) {
