@@ -53,6 +53,38 @@ extern void initialize_fake_status(void);
 extern ssize_t my_write_context(struct file *file, char *buf, size_t size);
 extern ssize_t my_write_access(struct file *file, char *buf, size_t size);
 #endif
+/*
+ * SukiSU only compiles drivers/kernelsu/feature/selinux_hide.c on 5.10+, so on
+ * this 4.19 tree nothing in the KernelSU sources provides the symbols above.
+ * Weak definitions keep vmlinux linkable and send every caller down the stock
+ * SELinux path, because ksu_selinux_hide_running stays false.  A KernelSU
+ * build that does provide them (HyperSU and BakaSU do on 4.19) overrides
+ * these at link time.
+ */
+extern int my_setprocattr(const char *name, void *value, size_t size);
+
+__weak bool ksu_selinux_hide_running = false;
+
+__weak struct page *fake_status = NULL;
+
+__weak void initialize_fake_status(void)
+{
+}
+
+__weak int my_setprocattr(const char *name, void *value, size_t size)
+{
+	return -EINVAL;
+}
+
+__weak ssize_t my_write_context(struct file *file, char *buf, size_t size)
+{
+	return -EINVAL;
+}
+
+__weak ssize_t my_write_access(struct file *file, char *buf, size_t size)
+{
+	return -EINVAL;
+}
 
 enum sel_inos {
 	SEL_ROOT_INO = 2,
