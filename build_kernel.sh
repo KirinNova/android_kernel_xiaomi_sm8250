@@ -248,6 +248,14 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "[*] Downloading and running SukiSU remote setup script..."
     curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
     echo "[+] SukiSU setup finished."
+
+    # SukiSU-Ultra targets recent kernels.  Adapt the handful of places that
+    # do not build on 4.19 before compilation starts.
+    if command -v python3 >/dev/null 2>&1; then
+        python3 ci/sukisu_419_fixup.py drivers/kernelsu
+    else
+        echo "[-] python3 not found, skipping the 4.19 compatibility fixups"
+    fi
 fi
 
 echo "==========================================="
