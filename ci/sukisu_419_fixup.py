@@ -27,11 +27,12 @@ when its anchor is gone -- an upstream fix must not turn into a build break.
      One define here covers all four call sites (the sources are amalgamated
      into ksu_main.c, which includes this header first).
 
-  5. infra/su_mount_ns.c
-     path_mount() came with the 5.2 mount API refactor.  The only call site
-     wants MS_PRIVATE|MS_REC on the fs root, which ksys_mount() can do; on
-     4.19 it is reached through set_fs(KERNEL_DS) so kernel strings are taken
-     as user pointers (that trick works up to 5.10).
+  5. infra/su_mount_ns.c -- deliberately NOT patched
+     path_mount() came with the 5.2 mount API refactor, but kernel_compat.c
+     already ships a __weak implementation for kernels below 5.9: it resolves
+     the struct path with d_path() and calls the 4.19 do_mount() under
+     set_fs(KERNEL_DS).  Adding a second definition here only collides with
+     that one ("redefinition of 'path_mount'"), so the file is left alone.
 
   6. extension/cpu_spoof.c
      struct clocksource.vdso_clock_mode and enum vdso_clock_mode are 5.3+.
@@ -72,42 +73,6 @@ TWA_NEW = """#include <linux/task_work.h>
 /* 4.19 task_work_add() takes a bool; the TWA_* enum only appeared in 5.9. */
 #ifndef TWA_RESUME
 #define TWA_RESUME true
-#endif
-"""
-
-# --- 5. su_mount_ns: path_mount on 4.19 ------------------------------------
-PATH_MOUNT_OLD = """extern int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags,
-                      void *data_page);
-"""
-PATH_MOUNT_NEW = """/*
- * path_mount() only exists from 5.2.  The single call site asks for
- * MS_PRIVATE | MS_REC on the fs root, which ksys_mount() can do; on 4.19 it is
- * reached through set_fs(KERNEL_DS) so the kernel strings are accepted as user
- * pointers, a trick that keeps working up to 5.10.
- */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 2, 0)
-extern int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags,
-                      void *data_page);
-#else
-#include <linux/syscalls.h>
-#include <linux/uaccess.h>
-static int path_mount(const char *dev_name, struct path *path, const char *type_page,
-                      unsigned long flags, void *data_page)
-{
-    mm_segment_t old_fs;
-    int ret;
-
-    (void)dev_name;
-    (void)path;
-    (void)type_page;
-    (void)data_page;
-
-    old_fs = get_fs();
-    set_fs(KERNEL_DS);
-    ret = ksys_mount(NULL, (char __user *)"/", NULL, flags, NULL);
-    set_fs(old_fs);
-    return ret;
-}
 #endif
 """
 
@@ -228,11 +193,6 @@ def main():
         os.path.join(root, "kernel_includes.h"),
         TWA_OLD, TWA_NEW,
         "kernel_includes: TWA_RESUME for 4.19 task_work_add()",
-    )
-    apply_edit(
-        os.path.join(root, "infra", "su_mount_ns.c"),
-        PATH_MOUNT_OLD, PATH_MOUNT_NEW,
-        "su_mount_ns: path_mount() shim via ksys_mount()",
     )
     guard_cpu_spoof(os.path.join(root, "extension", "cpu_spoof.c"))
 
