@@ -3560,6 +3560,10 @@ static int fg_gen4_enter_soc_scale(struct fg_gen4_chip *chip)
 	/* Set entry FVS SOC equal to current H/W reported SOC */
 	if (chip->dt.fg_increase_100soc_time)
 		soc = fg->param.smooth_batt_soc;
+	if (soc <= 0) {
+		fg_dbg(fg, FG_FVSS, "Skip FVSS with SOC %d\n", soc);
+		return -EINVAL;
+	}
 	chip->soc_scale_msoc = chip->prev_soc_scale_msoc = soc;
 	chip->scale_timer = chip->dt.scale_timer_ms;
 	/*
@@ -3669,8 +3673,14 @@ static int fg_gen4_validate_soc_scale_mode(struct fg_gen4_chip *chip)
 			fg->param.smooth_batt_soc = chip->soc_scale_msoc;
 			fg_gen4_exit_soc_scale(chip);
 		} else {
-			if (chip->msoc_actual >= chip->soc_scale_msoc)
+			if (chip->msoc_actual >= chip->soc_scale_msoc) {
+				/*
+				 * Resume the hardware SOC on charger insertion
+				 * instead of climbing back from the scaled value.
+				 */
+				fg->param.batt_soc = chip->msoc_actual;
 				fg_gen4_exit_soc_scale(chip);
+			}
 		}
 	}
 
@@ -4440,6 +4450,7 @@ static void soc_scale_work(struct work_struct *work)
 		 */
 		chip->soc_scale_msoc = chip->prev_soc_scale_msoc -
 					soc_thr_percent;
+		chip->scale_timer = 1000;
 	} else if (soc > chip->prev_soc_scale_msoc) {
 		/*
 		 * If calculated SOC is higher than current SOC, report current
@@ -4457,25 +4468,21 @@ static void soc_scale_work(struct work_struct *work)
 		 */
 		calculate_delta_time(&last_change_time, &time_since_last_change_sec);
 		calculate_average_current(chip);
-		/* Calculated average current > 700mA */
-		if (fg->param.batt_ma_avg > 700000)
-			delta_time = time_since_last_change_sec / 20;
-		else
-			delta_time = time_since_last_change_sec / 40;
-
+		delta_time = time_since_last_change_sec;
 		if (delta_time < 0)
 			delta_time = 0;
-		soc_changed = min(1, delta_time);
+		soc_changed = min(soc_thr_percent, delta_time);
 		fg_dbg(fg, FG_FVSS, "get delta_time = %d, soc_changed =%d, time_since_last_change_sec = %d\n", delta_time, soc_changed, time_since_last_change_sec);
 
 		chip->soc_scale_msoc = chip->prev_soc_scale_msoc - soc_changed;
-		chip->scale_timer = chip->dt.scale_timer_ms /
-				(chip->prev_soc_scale_msoc - soc);
+		chip->scale_timer = 1000;
 		if (chip->prev_soc_scale_msoc != chip->soc_scale_msoc)
 			fg->scale_soc_change_time = last_change_time;
 	}
 
-	if (soc == 0 && fg->charge_status == POWER_SUPPLY_STATUS_DISCHARGING) {
+	if (chip->vbatt_avg > 0 &&
+	    fg->charge_status == POWER_SUPPLY_STATUS_DISCHARGING &&
+	    (soc == 0 || chip->vbatt_avg <= chip->dt.cutoff_volt_mv)) {
 		fg_dbg(fg, FG_FVSS, "Vbatt below cutoff, publish empty SOC\n");
 		chip->soc_scale_msoc = 0;
 		chip->scale_timer = chip->dt.scale_timer_ms;
