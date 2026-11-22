@@ -106,21 +106,6 @@
 struct selinux_state selinux_state;
 
 #ifdef CONFIG_KSU_SUSFS
-/*
- * HyperSU calls this from selinux_hide_feature_set() unconditionally, but only
- * defines it when the kernel does not advertise
- * KSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE.  This tree does advertise it, so
- * the kernel has to supply the symbol.  The kernel-side hiding
- * (susfs_selinux_inode_setxattr) needs no setup, hence a no-op.  __weak keeps
- * a KernelSU build that does define it working unchanged.
- */
-int selinux_hide_init_setxattr(void);
-
-__weak int selinux_hide_init_setxattr(void)
-{
-	return 0;
-}
-
 extern bool ksu_selinux_hide_running;
 extern bool ksu_selinux_hide_enabled;
 extern int susfs_security_context_to_sid(struct selinux_state *state,
