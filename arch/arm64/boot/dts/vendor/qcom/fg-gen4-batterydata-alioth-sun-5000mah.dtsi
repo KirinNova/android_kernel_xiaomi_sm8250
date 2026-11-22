@@ -23,7 +23,7 @@ qcom,4599811_xiaomi_j3ssun_5000mah_averaged_masterslave_may28th2020 {
 	mi,six-pin-battery;
 	qcom,ffc-term-current-ma = <(-755)>;
 	qcom,fg-cc-cv-threshold-mv = <4440>;
-	qcom,fg-ffc-cc-cv-threshold-mv = <4490>;
+	qcom,fg-ffc-cc-cv-threshold-mv = <4480>;
 	qcom,nom-batt-capacity-mah = <5000>;
 	qcom,batt-id-kohm = <100>;
 	qcom,battery-beta = <4250>;

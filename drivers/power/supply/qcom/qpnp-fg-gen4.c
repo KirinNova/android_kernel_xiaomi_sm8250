@@ -356,6 +356,7 @@ struct fg_gen4_chip {
 	unsigned long		vbat_low_since;
 	unsigned long		vbat_throttle_reapply;
 	unsigned long		vbat_throttle_since;
+	unsigned long		empty_restart_until;
 	struct notifier_block	cpufreq_nb;
 	bool			soc_scale_mode;
 	bool			fastcharge_mode_enabled;
@@ -1019,11 +1020,6 @@ static int fg_gen4_get_prop_capacity(struct fg_dev *fg, int *val)
 	struct fg_gen4_chip *chip = container_of(fg, struct fg_gen4_chip, fg);
 	int rc, msoc;
 
-	if (!chip->dt.shutdown_delay_enable) {
-		*val = 1;
-		return 0;
-	}
-
 	if (is_debug_batt_id(fg)) {
 		*val = DEBUG_BATT_SOC;
 		return 0;
@@ -1049,6 +1045,12 @@ static int fg_gen4_get_prop_capacity(struct fg_dev *fg, int *val)
 		return 0;
 	}
 
+	if (fg->empty_restart_fg && chip->empty_restart_until &&
+	    time_after(jiffies, chip->empty_restart_until)) {
+		fg->empty_restart_fg = false;
+		chip->empty_restart_until = 0;
+	}
+
 	if (chip->soc_scale_mode) {
 		mutex_lock(&chip->soc_scale_lock);
 		*val = chip->soc_scale_msoc;
@@ -1065,8 +1067,10 @@ static int fg_gen4_get_prop_capacity(struct fg_dev *fg, int *val)
 		if (fg->empty_restart_fg) {
 			if (*val == 0)
 				*val = EMPTY_REPORT_SOC;
-			else
+			else {
 				fg->empty_restart_fg = false;
+				chip->empty_restart_until = 0;
+			}
 		}
 	}
 
@@ -1291,6 +1295,12 @@ static void fg_gen4_handle_low_vbat(struct fg_gen4_chip *chip, int ocv)
 		return;
 	}
 
+	if (is_input_present(fg)) {
+		chip->vbat_low_since = 0;
+		fg_gen4_set_vbat_throttle(chip, false);
+		return;
+	}
+
 	if (fg->battery_missing) {
 		chip->vbat_low_since = 0;
 		fg_gen4_set_vbat_throttle(chip, false);
@@ -1333,6 +1343,7 @@ static void fg_gen4_handle_low_vbat(struct fg_gen4_chip *chip, int ocv)
 				chip->vbatt_avg, ocv);
 		chip->vbatt_low = true;
 		fg->empty_restart_fg = false;
+		chip->empty_restart_until = 0;
 		if (batt_psy_initialized(fg))
 			power_supply_changed(fg->batt_psy);
 	}
@@ -7175,7 +7186,7 @@ static int fg_gen4_parse_dt(struct fg_gen4_chip *chip)
 	rc = of_property_read_u32(node, "qcom,fg-esr-meas-curr-ma", &temp);
 	if (!rc) {
 		/* ESR measurement current range is 60-240 mA */
-		if (temp >= 60 || temp <= 240)
+		if (temp >= 60 && temp <= 240)
 			chip->dt.esr_meas_curr_ma = temp;
 	}
 
@@ -7395,6 +7406,7 @@ static void empty_restart_fg_work(struct work_struct *work)
 {
 	struct fg_dev *fg = container_of(work, struct fg_dev,
 				    empty_restart_fg_work.work);
+	struct fg_gen4_chip *chip = container_of(fg, struct fg_gen4_chip, fg);
 	union power_supply_propval prop = {0, };
 	int usb_present = 0;
 	int rc;
@@ -7414,10 +7426,13 @@ static void empty_restart_fg_work(struct work_struct *work)
 		if (fg->profile_load_status == PROFILE_LOADED) {
 			pr_info("soc empty after cold to warm, need to restart fg\n");
 			fg->empty_restart_fg = true;
+			chip->empty_restart_until =
+				jiffies + msecs_to_jiffies(60000);
 			rc = fg_restart(fg, SOC_READY_WAIT_TIME_MS);
 			if (rc < 0) {
 				pr_err("Error in restarting FG, rc=%d\n", rc);
 				fg->empty_restart_fg = false;
+				chip->empty_restart_until = 0;
 				return;
 			}
 			pr_info("FG restart done\n");
