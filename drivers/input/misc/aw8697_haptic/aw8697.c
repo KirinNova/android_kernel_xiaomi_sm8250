@@ -1245,6 +1245,9 @@ static int aw869xx_haptic_set_bst_peak_cur(struct aw8697 *aw8697)
 }
 static int aw8697_haptic_set_gain(struct aw8697 *aw8697, unsigned char gain)
 {
+	if (aw8697->low_vbat)
+		gain /= 2;
+
 	if (aw8697->chip_version == AW8697_CHIP_9X) {
 		aw8697_i2c_write(aw8697, AW8697_REG_DATDBG, gain);
 	} else {
@@ -1725,6 +1728,26 @@ static int aw8697_haptic_get_vbat(struct aw8697 *aw8697)
 	aw8697_haptic_raminit(aw8697, false);
 
 	return 0;
+}
+
+static bool aw8697_haptic_low_battery(void)
+{
+	struct power_supply *batt;
+	union power_supply_propval pval;
+	bool low = false;
+
+	batt = power_supply_get_by_name("battery");
+	if (!batt)
+		return false;
+
+	if (!power_supply_get_property(batt, POWER_SUPPLY_PROP_VOLTAGE_NOW,
+					&pval))
+		low = pval.intval > 0 &&
+			pval.intval <= (AW8697_VBAT_LOW_LIMIT * 1000);
+
+	power_supply_put(batt);
+
+	return low;
 }
 
 static int aw8697_haptic_ram_vbat_comp(struct aw8697 *aw8697, bool flag)
@@ -3903,6 +3926,7 @@ static void aw8697_vibrator_work_routine(struct work_struct *work)
 	aw_pr_info("%s: effect_id = %d state=%d activate_mode = %d duration = %d\n",
 		__func__, aw8697->effect_id, aw8697->state,
 		aw8697->activate_mode, aw8697->duration);
+	aw8697->low_vbat = aw8697_haptic_low_battery();
 	mutex_lock(&aw8697->lock);
 	aw8697_haptic_upload_lra(aw8697, F0_CALI);
 	aw8697_haptic_stop(aw8697);

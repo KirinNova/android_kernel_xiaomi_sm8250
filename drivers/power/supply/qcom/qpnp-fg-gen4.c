@@ -356,6 +356,7 @@ struct fg_gen4_chip {
 	unsigned long		vbat_low_since;
 	unsigned long		vbat_throttle_reapply;
 	unsigned long		vbat_throttle_since;
+	unsigned long		vbat_now_low_since;
 	unsigned long		empty_restart_until;
 	struct notifier_block	cpufreq_nb;
 	bool			soc_scale_mode;
@@ -1221,6 +1222,8 @@ static int fg_gen4_get_power(struct fg_gen4_chip *chip, int *val, bool average)
 #define FG_VBAT_CRITICAL_MARGIN_MV	100
 #define FG_VBAT_RECOVER_MARGIN_MV	100
 #define FG_VBAT_SHUTDOWN_DELAY_MS	3000
+#define FG_VBAT_NOW_CRITICAL_MARGIN_MV	300
+#define FG_VBAT_NOW_SHUTDOWN_DELAY_MS	1000
 
 #ifdef CONFIG_CPU_FREQ
 static int fg_gen4_cpufreq_notifier(struct notifier_block *nb,
@@ -1282,6 +1285,25 @@ static void fg_gen4_set_vbat_throttle(struct fg_gen4_chip *chip, bool enable)
 #endif
 }
 
+static void fg_gen4_force_empty(struct fg_gen4_chip *chip, const char *reason,
+				int ocv)
+{
+	struct fg_dev *fg = &chip->fg;
+
+	if (chip->vbatt_low)
+		return;
+
+	pr_info("%s: Vbatt now=%dmV avg=%dmV OCV=%dmV, force empty\n",
+			reason, chip->vbatt_now, chip->vbatt_avg, ocv);
+	chip->vbatt_low = true;
+	fg->empty_restart_fg = false;
+	chip->empty_restart_until = 0;
+	chip->vbat_low_since = 0;
+	chip->vbat_now_low_since = 0;
+	if (batt_psy_initialized(fg))
+		power_supply_changed(fg->batt_psy);
+}
+
 static void fg_gen4_handle_low_vbat(struct fg_gen4_chip *chip, int ocv)
 {
 	struct fg_dev *fg = &chip->fg;
@@ -1291,18 +1313,21 @@ static void fg_gen4_handle_low_vbat(struct fg_gen4_chip *chip, int ocv)
 	if (!fg->soc_reporting_ready ||
 	    fg->charge_status != POWER_SUPPLY_STATUS_DISCHARGING) {
 		chip->vbat_low_since = 0;
+		chip->vbat_now_low_since = 0;
 		fg_gen4_set_vbat_throttle(chip, false);
 		return;
 	}
 
 	if (is_input_present(fg)) {
 		chip->vbat_low_since = 0;
+		chip->vbat_now_low_since = 0;
 		fg_gen4_set_vbat_throttle(chip, false);
 		return;
 	}
 
 	if (fg->battery_missing) {
 		chip->vbat_low_since = 0;
+		chip->vbat_now_low_since = 0;
 		fg_gen4_set_vbat_throttle(chip, false);
 		return;
 	}
@@ -1312,6 +1337,19 @@ static void fg_gen4_handle_low_vbat(struct fg_gen4_chip *chip, int ocv)
 
 	if (chip->vbatt_avg <= 0)
 		return;
+
+	if (chip->vbatt_now > 0 &&
+	    chip->vbatt_now <= cutoff - FG_VBAT_NOW_CRITICAL_MARGIN_MV) {
+		if (!chip->vbat_now_low_since) {
+			chip->vbat_now_low_since = jiffies;
+		} else if (time_after(jiffies, chip->vbat_now_low_since +
+				msecs_to_jiffies(FG_VBAT_NOW_SHUTDOWN_DELAY_MS))) {
+			fg_gen4_force_empty(chip, "instantaneous critical", ocv);
+			return;
+		}
+	} else {
+		chip->vbat_now_low_since = 0;
+	}
 
 	if (chip->vbatt_avg > cutoff + FG_VBAT_RECOVER_MARGIN_MV) {
 		chip->vbat_low_since = 0;
@@ -1339,13 +1377,8 @@ static void fg_gen4_handle_low_vbat(struct fg_gen4_chip *chip, int ocv)
 
 	if (time_after(jiffies, chip->vbat_low_since +
 			msecs_to_jiffies(FG_VBAT_SHUTDOWN_DELAY_MS))) {
-		pr_info("Vbatt %dmV/OCV %dmV stayed critical, force empty\n",
-				chip->vbatt_avg, ocv);
-		chip->vbatt_low = true;
-		fg->empty_restart_fg = false;
-		chip->empty_restart_until = 0;
-		if (batt_psy_initialized(fg))
-			power_supply_changed(fg->batt_psy);
+		fg_gen4_force_empty(chip, "critical filtered", ocv);
+		return;
 	}
 }
 

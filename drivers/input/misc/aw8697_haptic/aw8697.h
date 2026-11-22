@@ -456,6 +456,7 @@ struct aw8697 {
 
 	unsigned char ram_vbat_comp;
 	unsigned int vbat;
+	bool low_vbat;
 	unsigned int lra;
 
 	unsigned char bst_pc;
