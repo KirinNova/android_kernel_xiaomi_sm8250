@@ -1242,6 +1242,9 @@ static void fg_gen4_set_vbat_throttle(struct fg_gen4_chip *chip, bool enable)
 {
 	struct fg_dev *fg = &chip->fg;
 	bool changed = READ_ONCE(chip->vbat_throttle) != enable;
+#ifdef CONFIG_CPU_FREQ
+	int cpu;
+#endif
 
 	if (!changed && !enable)
 		return;
