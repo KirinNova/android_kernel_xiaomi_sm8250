@@ -5397,18 +5397,6 @@ static int fg_psy_get_property(struct power_supply *psy,
 				pval->intval = fg->param.smooth_batt_soc;
 		}
 
-		if (chip->soc_scale_mode && !chip->vbatt_low &&
-				chip->soc_scale_slope > 0) {
-			int target = chip->vbatt_res > 0 ?
-				DIV_ROUND_CLOSEST(chip->vbatt_res,
-						chip->soc_scale_slope) : 0;
-
-			/* Never report more than the voltage-derived SOC. */
-			pval->intval = min(pval->intval, max(target, 1));
-		} else if (chip->vbat_throttle && !chip->vbatt_low) {
-			pval->intval = min(pval->intval, 1);
-		}
-
 		//shutdown delay feature
 		if (chip->dt.shutdown_delay_enable) {
 			if (pval->intval == 0) {
