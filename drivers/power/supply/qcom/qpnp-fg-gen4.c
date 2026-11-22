@@ -4475,6 +4475,12 @@ static void soc_scale_work(struct work_struct *work)
 			fg->scale_soc_change_time = last_change_time;
 	}
 
+	if (soc == 0 && fg->charge_status == POWER_SUPPLY_STATUS_DISCHARGING) {
+		fg_dbg(fg, FG_FVSS, "Vbatt below cutoff, publish empty SOC\n");
+		chip->soc_scale_msoc = 0;
+		chip->scale_timer = chip->dt.scale_timer_ms;
+	}
+
 	if (chip->soc_scale_msoc < 0)
 		chip->soc_scale_msoc = 0;
 
