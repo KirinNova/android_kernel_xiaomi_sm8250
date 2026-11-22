@@ -936,6 +936,23 @@ out:
 }
 
 #ifdef CONFIG_KSU_SUSFS
+/*
+ * Current BakaSU moved selinux_hide into the kernel and no longer exports
+ * these; delegate to the stock handlers so the tree still links.  A KernelSU
+ * build that does export them (HyperSU does) overrides these weak
+ * definitions at link time.
+ */
+__weak ssize_t my_write_context(struct file *file, char *buf, size_t size)
+{
+	return sel_write_context(file, buf, size);
+}
+
+__weak ssize_t my_write_access(struct file *file, char *buf, size_t size)
+{
+	return sel_write_access(file, buf, size);
+}
+#endif // #ifdef CONFIG_KSU_SUSFS
+#ifdef CONFIG_KSU_SUSFS
 static ssize_t handle_sel_write_access(struct file *file, char *buf, size_t size)
 {
 	// apply to all app uids
