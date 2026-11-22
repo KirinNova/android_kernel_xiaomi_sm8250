@@ -18,6 +18,10 @@
 #include <linux/qpnp/qpnp-pbs.h>
 #include <linux/qpnp/qpnp-revid.h>
 #include <linux/thermal.h>
+#include <linux/cpu.h>
+#include <linux/cpufreq.h>
+#include <linux/jiffies.h>
+#include <linux/notifier.h>
 #include "fg-core.h"
 #include "fg-reg.h"
 #include "fg-alg.h"
@@ -346,7 +350,12 @@ struct fg_gen4_chip {
 	bool			rslow_low;
 	bool			rapid_soc_dec_en;
 	bool			vbatt_low;
+	bool			vbat_throttle;
+	bool			cpufreq_nb_registered;
 	bool			chg_term_good;
+	unsigned long		vbat_low_since;
+	unsigned long		vbat_throttle_reapply;
+	struct notifier_block	cpufreq_nb;
 	bool			soc_scale_mode;
 	bool			fastcharge_mode_enabled;
 	int                     hw_country;
@@ -1203,6 +1212,115 @@ static int fg_gen4_get_power(struct fg_gen4_chip *chip, int *val, bool average)
 #define LOW_TEMP_CUTOFF_VOL_MV  3200
 #define NORMAL_TEMP_CUTOFF_VOL_MV 3400
 
+#define FG_VBAT_THROTTLE_MAX_KHZ	1500000
+#define FG_VBAT_CRITICAL_MARGIN_MV	100
+#define FG_VBAT_RECOVER_MARGIN_MV	100
+#define FG_VBAT_SHUTDOWN_DELAY_MS	3000
+
+#ifdef CONFIG_CPU_FREQ
+static int fg_gen4_cpufreq_notifier(struct notifier_block *nb,
+		unsigned long event, void *data)
+{
+	struct fg_gen4_chip *chip = container_of(nb, struct fg_gen4_chip,
+			cpufreq_nb);
+	struct cpufreq_policy *policy = data;
+	unsigned int cap;
+
+	if (event != CPUFREQ_ADJUST || !READ_ONCE(chip->vbat_throttle))
+		return NOTIFY_OK;
+
+	cap = max_t(unsigned int, policy->cpuinfo.min_freq,
+			min_t(unsigned int, policy->max,
+				(unsigned int)FG_VBAT_THROTTLE_MAX_KHZ));
+	cpufreq_verify_within_limits(policy, policy->cpuinfo.min_freq, cap);
+
+	return NOTIFY_OK;
+}
+#endif
+
+static void fg_gen4_set_vbat_throttle(struct fg_gen4_chip *chip, bool enable)
+{
+	struct fg_dev *fg = &chip->fg;
+	bool changed = READ_ONCE(chip->vbat_throttle) != enable;
+
+	if (!changed && !enable)
+		return;
+
+	if (changed) {
+		WRITE_ONCE(chip->vbat_throttle, enable);
+		pr_info("battery voltage throttle %s\n",
+				enable ? "on" : "off");
+		if (batt_psy_initialized(fg))
+			power_supply_changed(fg->batt_psy);
+	}
+
+#ifdef CONFIG_CPU_FREQ
+	if (!chip->cpufreq_nb_registered)
+		return;
+
+	if (!changed && time_before(jiffies, chip->vbat_throttle_reapply +
+				msecs_to_jiffies(10000)))
+		return;
+
+	chip->vbat_throttle_reapply = jiffies;
+	get_online_cpus();
+	for_each_online_cpu(cpu)
+		cpufreq_update_policy(cpu);
+	put_online_cpus();
+#endif
+}
+
+static void fg_gen4_handle_low_vbat(struct fg_gen4_chip *chip, int ocv)
+{
+	struct fg_dev *fg = &chip->fg;
+	int cutoff = chip->dt.cutoff_volt_mv;
+	bool critical;
+
+	if (!fg->soc_reporting_ready ||
+	    fg->charge_status != POWER_SUPPLY_STATUS_DISCHARGING) {
+		chip->vbat_low_since = 0;
+		fg_gen4_set_vbat_throttle(chip, false);
+		return;
+	}
+
+	if (chip->vbatt_low)
+		return;
+
+	if (chip->vbatt_avg <= 0)
+		return;
+
+	if (chip->vbatt_avg > cutoff + FG_VBAT_RECOVER_MARGIN_MV) {
+		chip->vbat_low_since = 0;
+		fg_gen4_set_vbat_throttle(chip, false);
+		return;
+	}
+
+	if (chip->vbatt_avg <= cutoff || (ocv > 0 && ocv <= cutoff))
+		fg_gen4_set_vbat_throttle(chip, true);
+
+	critical = chip->vbatt_avg <= cutoff - FG_VBAT_CRITICAL_MARGIN_MV ||
+		(ocv > 0 && ocv <= cutoff - FG_VBAT_CRITICAL_MARGIN_MV);
+	if (!critical) {
+		chip->vbat_low_since = 0;
+		return;
+	}
+
+	if (!chip->vbat_low_since) {
+		chip->vbat_low_since = jiffies;
+		return;
+	}
+
+	if (time_after(jiffies, chip->vbat_low_since +
+			msecs_to_jiffies(FG_VBAT_SHUTDOWN_DELAY_MS))) {
+		pr_info("Vbatt %dmV/OCV %dmV stayed critical, force empty\n",
+				chip->vbatt_avg, ocv);
+		chip->vbatt_low = true;
+		fg->empty_restart_fg = false;
+		if (batt_psy_initialized(fg))
+			power_supply_changed(fg->batt_psy);
+	}
+}
+
 static int fg_gen4_get_prop_soc_scale(struct fg_gen4_chip *chip)
 {
 	struct fg_dev *fg = &chip->fg;
@@ -1262,23 +1380,13 @@ static int fg_gen4_get_prop_soc_scale(struct fg_gen4_chip *chip)
 		fg_dbg(fg, FG_STATUS, "OCV %d recovered, reset vbatt_low\n",
 			ocv);
 		chip->vbatt_low = false;
+		chip->vbat_low_since = 0;
+		fg_gen4_set_vbat_throttle(chip, false);
 		if (batt_psy_initialized(fg))
 			power_supply_changed(fg->batt_psy);
 	}
 
-	if (fg->soc_reporting_ready && ocv > 0 &&
-			fg->charge_status == POWER_SUPPLY_STATUS_DISCHARGING &&
-			ocv <= chip->dt.cutoff_volt_mv) {
-		if (!chip->vbatt_low) {
-			fg_dbg(fg, FG_STATUS,
-				"OCV %d <= cutoff %d, force empty\n",
-				ocv, chip->dt.cutoff_volt_mv);
-			chip->vbatt_low = true;
-			fg->empty_restart_fg = false;
-			if (batt_psy_initialized(fg))
-				power_supply_changed(fg->batt_psy);
-		}
-	}
+	fg_gen4_handle_low_vbat(chip, ocv);
 
 	return rc;
 }
@@ -5228,6 +5336,18 @@ static int fg_psy_get_property(struct power_supply *psy,
 				pval->intval = fg->param.smooth_batt_soc;
 		}
 
+		if (chip->soc_scale_mode && !chip->vbatt_low &&
+				chip->soc_scale_slope > 0) {
+			int target = chip->vbatt_res > 0 ?
+				DIV_ROUND_CLOSEST(chip->vbatt_res,
+						chip->soc_scale_slope) : 0;
+
+			/* Never report more than the voltage-derived SOC. */
+			pval->intval = min(pval->intval, max(target, 1));
+		} else if (chip->vbat_throttle && !chip->vbatt_low) {
+			pval->intval = min(pval->intval, 1);
+		}
+
 		//shutdown delay feature
 		if (chip->dt.shutdown_delay_enable) {
 			if (pval->intval == 0) {
@@ -7381,6 +7501,15 @@ static void fg_gen4_cleanup(struct fg_gen4_chip *chip)
 {
 	struct fg_dev *fg = &chip->fg;
 
+	fg_gen4_set_vbat_throttle(chip, false);
+#ifdef CONFIG_CPU_FREQ
+	if (chip->cpufreq_nb_registered) {
+		cpufreq_unregister_notifier(&chip->cpufreq_nb,
+						CPUFREQ_POLICY_NOTIFIER);
+		chip->cpufreq_nb_registered = false;
+	}
+#endif
+
 	fg_unregister_interrupts(fg, chip, FG_GEN4_IRQ_MAX);
 
 	cancel_work_sync(&fg->status_change_work);
@@ -7608,6 +7737,17 @@ static int fg_gen4_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, chip);
+
+#ifdef CONFIG_CPU_FREQ
+	chip->cpufreq_nb.notifier_call = fg_gen4_cpufreq_notifier;
+	rc = cpufreq_register_notifier(&chip->cpufreq_nb,
+					CPUFREQ_POLICY_NOTIFIER);
+	if (rc < 0)
+		pr_err("Failed to register cpufreq notifier, rc=%d\n", rc);
+	else
+		chip->cpufreq_nb_registered = true;
+#endif
+
 	rc = fg_gen4_hw_init(chip);
 	if (rc < 0) {
 		dev_err(fg->dev, "Error in initializing FG hardware, rc:%d\n",
@@ -7740,6 +7880,7 @@ static void fg_gen4_shutdown(struct platform_device *pdev)
 	struct fg_dev *fg = &chip->fg;
 	int rc, bsoc, msoc;
 
+	fg_gen4_set_vbat_throttle(chip, false);
 	fg_unregister_interrupts(fg, chip, FG_GEN4_IRQ_MAX);
 
 	if (chip->soc_scale_mode)

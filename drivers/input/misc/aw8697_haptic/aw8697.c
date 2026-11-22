@@ -1741,7 +1741,13 @@ static int aw8697_haptic_ram_vbat_comp(struct aw8697 *aw8697, bool flag)
 			}
 			temp_gain =
 				aw8697->gain * AW8697_VBAT_REFER / aw8697->vbat;
-			if (temp_gain >
+			if (aw8697->vbat <= AW8697_VBAT_LOW_LIMIT) {
+				/* Don't boost the gain on a weak battery. */
+				temp_gain = aw8697->gain / 2;
+				aw_pr_debug("%s low vbat %dmV, gain=%d\n",
+						__func__, aw8697->vbat,
+						temp_gain);
+			} else if (temp_gain >
 			    (128 * AW8697_VBAT_REFER / AW8697_VBAT_MIN)) {
 				temp_gain = 128 * AW8697_VBAT_REFER /
 					    AW8697_VBAT_MIN;
