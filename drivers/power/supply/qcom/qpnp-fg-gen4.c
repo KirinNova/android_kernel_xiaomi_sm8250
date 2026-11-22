@@ -330,6 +330,8 @@ struct fg_gen4_chip {
 	int			vbatt_avg;
 	int			vbatt_now;
 	int			vbatt_res;
+	int			ocv_mv;
+	unsigned long		boot_grace_until;
 	int			scale_timer;
 	int			current_now;
 	int			calib_level;
@@ -1239,6 +1241,7 @@ static int fg_gen4_get_prop_soc_scale(struct fg_gen4_chip *chip)
 		rc = 0;
 	}
 	ocv /= 1000;
+	chip->ocv_mv = ocv;
 
 	/* Exit rapid soc decrease mode when battery voltage > 3700mV to recover real soc value */
 	if (chip->vbatt_avg > 3650) {
@@ -1256,23 +1259,27 @@ static int fg_gen4_get_prop_soc_scale(struct fg_gen4_chip *chip)
 		}
 	}
 
-	if (chip->vbatt_low &&
-	    ((ocv > 0 && ocv > 3650) ||
-	     (!ocv && chip->vbatt_avg > 3650))) {
-		fg_dbg(fg, FG_STATUS, "OCV %d recovered, reset vbatt_low\n",
-			ocv);
+	if (chip->vbatt_low && chip->vbatt_avg > 3650 &&
+	    ((ocv > 0 && ocv > 3650) || !ocv)) {
+		fg_dbg(fg, FG_STATUS,
+			"OCV %d/Vbatt %d recovered, reset vbatt_low\n",
+			ocv, chip->vbatt_avg);
 		chip->vbatt_low = false;
 		if (batt_psy_initialized(fg))
 			power_supply_changed(fg->batt_psy);
 	}
 
-	if (fg->soc_reporting_ready && ocv > 0 &&
+	if (fg->soc_reporting_ready &&
 			fg->charge_status == POWER_SUPPLY_STATUS_DISCHARGING &&
-			ocv <= chip->dt.cutoff_volt_mv) {
+			((ocv > 0 && ocv <= chip->dt.cutoff_volt_mv) ||
+			 (time_after(jiffies, chip->boot_grace_until) &&
+			  chip->vbatt_avg > 0 &&
+			  chip->dt.empty_volt_mv > 0 &&
+			  chip->vbatt_avg <= chip->dt.empty_volt_mv + 100))) {
 		if (!chip->vbatt_low) {
 			fg_dbg(fg, FG_STATUS,
-				"OCV %d <= cutoff %d, force empty\n",
-				ocv, chip->dt.cutoff_volt_mv);
+				"OCV %d/Vbatt %d <= cutoff, force empty\n",
+				ocv, chip->vbatt_avg);
 			chip->vbatt_low = true;
 			fg->empty_restart_fg = false;
 			if (batt_psy_initialized(fg))
@@ -3546,6 +3553,8 @@ static int fg_gen4_set_vbatt_tau(struct fg_gen4_chip *chip, u8 vbatt_tau)
 	return rc;
 }
 
+#define FVSS_BOOT_GRACE_MS	120000
+
 static int fg_gen4_enter_soc_scale(struct fg_gen4_chip *chip)
 {
 	struct fg_dev *fg = &chip->fg;
@@ -3567,12 +3576,18 @@ static int fg_gen4_enter_soc_scale(struct fg_gen4_chip *chip)
 	chip->soc_scale_msoc = chip->prev_soc_scale_msoc = soc;
 	chip->scale_timer = chip->dt.scale_timer_ms;
 	/*
-	 * Calculate the FVS slope to linearly calculate SOC
-	 * based on filtered battery voltage.
+	 * Calculate the FVS slope to linearly calculate SOC from the
+	 * open-circuit voltage when available.
 	 */
-	chip->soc_scale_slope =
+	if (chip->ocv_mv > chip->dt.cutoff_volt_mv)
+		chip->soc_scale_slope =
+			DIV_ROUND_CLOSEST(chip->ocv_mv -
+					  chip->dt.cutoff_volt_mv,
+					  chip->soc_scale_msoc);
+	else
+		chip->soc_scale_slope =
 			DIV_ROUND_CLOSEST(chip->vbatt_res,
-					chip->soc_scale_msoc);
+					  chip->soc_scale_msoc);
 	if (chip->soc_scale_slope <= 0) {
 		pr_err("Error in slope calculated = %d\n",
 			chip->soc_scale_slope);
@@ -4410,7 +4425,7 @@ static void soc_scale_work(struct work_struct *work)
 	struct fg_dev *fg = &chip->fg;
 	struct timespec last_change_time = fg->scale_soc_change_time;
 	int soc, soc_thr_percent, rc, soc_changed, time_since_last_change_sec;
-	int delta_time = 0;
+	int delta_time = 0, res;
 
 	if (!chip->soc_scale_mode)
 		return;
@@ -4435,8 +4450,15 @@ static void soc_scale_work(struct work_struct *work)
 		chip->vbatt_res = 0;
 
 	mutex_lock(&chip->soc_scale_lock);
-	soc = DIV_ROUND_CLOSEST(chip->vbatt_res,
-				chip->soc_scale_slope);
+	if (chip->ocv_mv > 0) {
+		res = chip->ocv_mv - chip->dt.cutoff_volt_mv;
+		if (res < 0)
+			res = 0;
+		soc = DIV_ROUND_CLOSEST(res, chip->soc_scale_slope);
+	} else {
+		/* Without OCV keep the current scaled SOC */
+		soc = chip->prev_soc_scale_msoc;
+	}
 	chip->soc_scale_msoc = soc;
 	chip->scale_timer = chip->dt.scale_timer_ms;
 
@@ -4478,14 +4500,6 @@ static void soc_scale_work(struct work_struct *work)
 		chip->scale_timer = 1000;
 		if (chip->prev_soc_scale_msoc != chip->soc_scale_msoc)
 			fg->scale_soc_change_time = last_change_time;
-	}
-
-	if (chip->vbatt_avg > 0 &&
-	    fg->charge_status == POWER_SUPPLY_STATUS_DISCHARGING &&
-	    (soc == 0 || chip->vbatt_avg <= chip->dt.cutoff_volt_mv)) {
-		fg_dbg(fg, FG_FVSS, "Vbatt below cutoff, publish empty SOC\n");
-		chip->soc_scale_msoc = 0;
-		chip->scale_timer = chip->dt.scale_timer_ms;
 	}
 
 	if (chip->soc_scale_msoc < 0)
@@ -7488,6 +7502,8 @@ static int fg_gen4_probe(struct platform_device *pdev)
 	fg->fake_chip_ok = -EINVAL;
 	fg->maxim_cycle_count = INT_MIN;
 	chip->vbat_critical_low_count = 0;
+	chip->boot_grace_until = jiffies +
+			msecs_to_jiffies(FVSS_BOOT_GRACE_MS);
 	fg->param.smooth_batt_soc = 0;
 	fg->param.smooth_low_batt_soc = 0;
 	fg->param.smooth_full_soc = 0;
