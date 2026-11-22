@@ -355,6 +355,7 @@ struct fg_gen4_chip {
 	bool			chg_term_good;
 	unsigned long		vbat_low_since;
 	unsigned long		vbat_throttle_reapply;
+	unsigned long		vbat_throttle_since;
 	struct notifier_block	cpufreq_nb;
 	bool			soc_scale_mode;
 	bool			fastcharge_mode_enabled;
@@ -1232,6 +1233,8 @@ static int fg_gen4_cpufreq_notifier(struct notifier_block *nb,
 	cap = max_t(unsigned int, policy->cpuinfo.min_freq,
 			min_t(unsigned int, policy->max,
 				(unsigned int)FG_VBAT_THROTTLE_MAX_KHZ));
+	if (!cap)
+		return NOTIFY_OK;
 	cpufreq_verify_within_limits(policy, policy->cpuinfo.min_freq, cap);
 
 	return NOTIFY_OK;
@@ -1251,6 +1254,8 @@ static void fg_gen4_set_vbat_throttle(struct fg_gen4_chip *chip, bool enable)
 
 	if (changed) {
 		WRITE_ONCE(chip->vbat_throttle, enable);
+		if (enable)
+			chip->vbat_throttle_since = jiffies;
 		pr_info("battery voltage throttle %s\n",
 				enable ? "on" : "off");
 		if (batt_psy_initialized(fg))
@@ -1286,6 +1291,12 @@ static void fg_gen4_handle_low_vbat(struct fg_gen4_chip *chip, int ocv)
 		return;
 	}
 
+	if (fg->battery_missing) {
+		chip->vbat_low_since = 0;
+		fg_gen4_set_vbat_throttle(chip, false);
+		return;
+	}
+
 	if (chip->vbatt_low)
 		return;
 
@@ -1294,7 +1305,10 @@ static void fg_gen4_handle_low_vbat(struct fg_gen4_chip *chip, int ocv)
 
 	if (chip->vbatt_avg > cutoff + FG_VBAT_RECOVER_MARGIN_MV) {
 		chip->vbat_low_since = 0;
-		fg_gen4_set_vbat_throttle(chip, false);
+		/* Avoid throttle flapping when the load follows the cap. */
+		if (time_after(jiffies, chip->vbat_throttle_since +
+				msecs_to_jiffies(10000)))
+			fg_gen4_set_vbat_throttle(chip, false);
 		return;
 	}
 
