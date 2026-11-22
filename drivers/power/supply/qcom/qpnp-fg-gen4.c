@@ -3646,14 +3646,14 @@ static int fg_gen4_validate_soc_scale_mode(struct fg_gen4_chip *chip)
 	struct fg_dev *fg = &chip->fg;
 	int rc, vbatt_scale_mv;
 
+	if (!chip->dt.soc_scale_mode)
+		return 0;
+
 	rc = fg_gen4_get_prop_soc_scale(chip);
 	if (rc < 0) {
 		pr_err("Failed to get soc scale props\n");
 		goto fail_soc_scale;
 	}
-
-	if (!chip->dt.soc_scale_mode)
-		return 0;
 
 	rc = fg_get_msoc(fg, &chip->msoc_actual);
 	if (rc < 0) {
@@ -3688,14 +3688,8 @@ static int fg_gen4_validate_soc_scale_mode(struct fg_gen4_chip *chip)
 			fg->param.smooth_batt_soc = chip->soc_scale_msoc;
 			fg_gen4_exit_soc_scale(chip);
 		} else {
-			if (chip->msoc_actual >= chip->soc_scale_msoc) {
-				/*
-				 * Resume the hardware SOC on charger insertion
-				 * instead of climbing back from the scaled value.
-				 */
-				fg->param.batt_soc = chip->msoc_actual;
+			if (chip->msoc_actual >= chip->soc_scale_msoc)
 				fg_gen4_exit_soc_scale(chip);
-			}
 		}
 	}
 
@@ -4472,7 +4466,6 @@ static void soc_scale_work(struct work_struct *work)
 		 */
 		chip->soc_scale_msoc = chip->prev_soc_scale_msoc -
 					soc_thr_percent;
-		chip->scale_timer = 1000;
 	} else if (soc > chip->prev_soc_scale_msoc) {
 		/*
 		 * If calculated SOC is higher than current SOC, report current
@@ -4490,14 +4483,20 @@ static void soc_scale_work(struct work_struct *work)
 		 */
 		calculate_delta_time(&last_change_time, &time_since_last_change_sec);
 		calculate_average_current(chip);
-		delta_time = time_since_last_change_sec;
+		/* Calculated average current > 700mA */
+		if (fg->param.batt_ma_avg > 700000)
+			delta_time = time_since_last_change_sec / 20;
+		else
+			delta_time = time_since_last_change_sec / 40;
+
 		if (delta_time < 0)
 			delta_time = 0;
-		soc_changed = min(soc_thr_percent, delta_time);
+		soc_changed = min(1, delta_time);
 		fg_dbg(fg, FG_FVSS, "get delta_time = %d, soc_changed =%d, time_since_last_change_sec = %d\n", delta_time, soc_changed, time_since_last_change_sec);
 
 		chip->soc_scale_msoc = chip->prev_soc_scale_msoc - soc_changed;
-		chip->scale_timer = 1000;
+		chip->scale_timer = chip->dt.scale_timer_ms /
+				(chip->prev_soc_scale_msoc - soc);
 		if (chip->prev_soc_scale_msoc != chip->soc_scale_msoc)
 			fg->scale_soc_change_time = last_change_time;
 	}
@@ -4507,8 +4506,6 @@ static void soc_scale_work(struct work_struct *work)
 
 	mutex_unlock(&chip->soc_scale_lock);
 	if (chip->prev_soc_scale_msoc != chip->soc_scale_msoc) {
-		/* update MSOC */
-		fg_gen4_write_scale_msoc(chip);
 		if (batt_psy_initialized(fg))
 			power_supply_changed(fg->batt_psy);
 	}
@@ -7108,20 +7105,6 @@ static int fg_gen4_parse_dt(struct fg_gen4_chip *chip)
 static int scale_count;
 extern bool off_charge_flag;
 
-#define SMOOTH_VOLT_LEN         4
-
-struct LowSoc_HighVolt_Smooth{
-	int volt_lim;
-	int time;
-};
-
-struct LowSoc_HighVolt_Smooth lowsoc_highvolt_smooth[SMOOTH_VOLT_LEN] = {
-	{0,    10},
-	{3400, 30},
-	{3500, 45},
-	{3600, 60},
-};
-
 static void fg_battery_soc_smooth_tracking(struct fg_gen4_chip *chip)
 {
 	struct fg_dev *fg = &chip->fg;
@@ -7130,7 +7113,6 @@ static void fg_battery_soc_smooth_tracking(struct fg_gen4_chip *chip)
 	int last_batt_soc = fg->param.batt_soc;
 	int time_since_last_change_sec;
 	int last_smooth_batt_soc = fg->param.smooth_batt_soc;
-	int i;
 
 	struct timespec last_change_time = fg->param.last_soc_change_time;
 
@@ -7159,17 +7141,6 @@ static void fg_battery_soc_smooth_tracking(struct fg_gen4_chip *chip)
 			delta_time = time_since_last_change_sec / 20;
 	}
 
-	//increase unit_time when low power but high voltage, to prevent cliff fall when low power but high voltage
-	if(fg->param.batt_raw_soc == 0 && last_batt_soc > 1){
-		for(i = SMOOTH_VOLT_LEN; i > 0; i--){
-			if(fg->param.batt_mv > lowsoc_highvolt_smooth[i-1].volt_lim){
-				delta_time = time_since_last_change_sec / lowsoc_highvolt_smooth[i-1].time;
-				break;
-			}
-		}
-	}	
-
-
 	if (delta_time < 0)
 		delta_time = 0;
 
@@ -7180,19 +7151,24 @@ static void fg_battery_soc_smooth_tracking(struct fg_gen4_chip *chip)
 				&& fg->param.batt_raw_soc >= 95
 				&& fg->charge_status == POWER_SUPPLY_STATUS_FULL)
 			// Unlikely status
-			last_batt_soc = last_batt_soc + soc_changed;
+			last_batt_soc = fg->param.update_now ?
+				100 : last_batt_soc + soc_changed;
 		else if (last_batt_soc < fg->param.batt_raw_soc &&
 			fg->param.batt_ma < 0)
 			/* Battery in charging status
 			* update the soc when resuming device
 			*/
-			last_batt_soc = last_batt_soc + soc_changed;
+			last_batt_soc = fg->param.update_now ?
+				fg->param.batt_raw_soc : last_batt_soc + soc_changed;
 		else if (last_batt_soc > fg->param.batt_raw_soc
 					&& fg->param.batt_ma > 0)
 			/* Battery in discharging status
 			* update the soc when resuming device
 			*/
-			last_batt_soc = last_batt_soc - soc_changed;
+			last_batt_soc = fg->param.update_now ?
+				fg->param.batt_raw_soc : last_batt_soc - soc_changed;
+
+		fg->param.update_now = false;
 	} else {
 		last_batt_soc = fg->param.batt_raw_soc;
 	}
@@ -7838,6 +7814,7 @@ static int fg_gen4_resume(struct device *dev)
 		schedule_delayed_work(&fg->sram_dump_work,
 				msecs_to_jiffies(fg_sram_dump_period_ms));
 
+	fg->param.update_now = true;
 	schedule_delayed_work(&fg->soc_monitor_work,
 				msecs_to_jiffies(MONITOR_SOC_WAIT_MS));
 	return 0;
