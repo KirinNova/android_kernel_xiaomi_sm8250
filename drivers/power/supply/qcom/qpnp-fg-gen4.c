@@ -5289,9 +5289,13 @@ static int fg_psy_get_property(struct power_supply *psy,
 		pval->intval = div_s64((int64_t)val * 10000,  CC_SOC_30BIT);
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		if (fg->battery_missing)
+		if (fg->battery_missing) {
 			pval->intval = 3700000;
-		else
+			break;
+		}
+		/* Report the filtered voltage so the UI does not track load transients */
+		rc = fg_get_sram_prop(fg, FG_SRAM_VBAT_FLT, &pval->intval);
+		if (rc < 0 || pval->intval <= 0)
 			rc = fg_get_battery_voltage(fg, &pval->intval);
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
