@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - HyperSU
+      - test-susfs-nohide
   workflow_dispatch:
     inputs:
       device:

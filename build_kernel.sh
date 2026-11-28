@@ -553,7 +553,7 @@ build_target() {
         # a fixed prefix, so Bakasu and HyperSU builds are distinguishable.
         local KSU_ZIP_STR="${KSU_FLAVOR}-NoKernelSU"
         if [ "$ENABLE_KSU" -eq 1 ]; then
-            KSU_ZIP_STR="${KSU_FLAVOR}-SuSFS"
+            KSU_ZIP_STR="${KSU_FLAVOR}-SuSFS-NoHide"
         fi
         local GIT_COMMIT_ID=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
         local OS_UPPER=$(echo "$OS_TYPE" | tr '[:lower:]' '[:upper:]')
