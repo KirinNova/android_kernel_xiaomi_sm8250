@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - HyperSU
+      - test-manual-hook
   workflow_dispatch:
     inputs:
       device:

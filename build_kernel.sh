@@ -382,7 +382,11 @@ build_target() {
         scripts/config --file "${OUT_DIR}/.config" \
             -e KSU \
             -e THREAD_INFO_IN_TASK \
-            -e KSU_SUSFS
+            -e KSU_MANUAL_HOOK \
+            -e KSU_MANUAL_HOOK_AUTO_SETUID_HOOK \
+            -e KSU_MANUAL_HOOK_AUTO_INITRC_HOOK \
+            -e KSU_MANUAL_HOOK_AUTO_INPUT_HOOK \
+            -d KSU_SUSFS
     fi
 
     configure_droidspaces_non_gki "${OUT_DIR}"
@@ -553,7 +557,7 @@ build_target() {
         # a fixed prefix, so Bakasu and HyperSU builds are distinguishable.
         local KSU_ZIP_STR="${KSU_FLAVOR}-NoKernelSU"
         if [ "$ENABLE_KSU" -eq 1 ]; then
-            KSU_ZIP_STR="${KSU_FLAVOR}-SuSFS"
+            KSU_ZIP_STR="${KSU_FLAVOR}-ManualHook"
         fi
         local GIT_COMMIT_ID=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
         local OS_UPPER=$(echo "$OS_TYPE" | tr '[:lower:]' '[:upper:]')

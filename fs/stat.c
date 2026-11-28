@@ -33,6 +33,15 @@ extern bool __ksu_is_allow_uid_for_current(uid_t uid);
 extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
 #endif // #ifdef CONFIG_KSU_SUSFS
 
+#ifdef CONFIG_KSU_MANUAL_HOOK
+extern void ksu_handle_newfstat_ret(unsigned int *fd,
+				    struct stat __user **statbuf_ptr);
+#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
+extern void ksu_handle_fstat64_ret(unsigned long *fd,
+				   struct stat64 __user **statbuf_ptr);
+#endif
+#endif // #ifdef CONFIG_KSU_MANUAL_HOOK
+
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);
 extern void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat, u32 result_mask);
@@ -462,6 +471,10 @@ SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
 	if (!error)
 		error = cp_new_stat(&stat, statbuf);
 
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	ksu_handle_newfstat_ret(&fd, &statbuf);
+#endif
+
 	return error;
 }
 
@@ -587,6 +600,10 @@ SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
 
 	if (!error)
 		error = cp_new_stat64(&stat, statbuf);
+
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	ksu_handle_fstat64_ret(&fd, &statbuf);
+#endif
 
 	return error;
 }
