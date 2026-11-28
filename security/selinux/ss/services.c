@@ -1745,6 +1745,13 @@ int susfs_security_context_to_sid_force(struct selinux_state *state,
 	return susfs_security_context_to_sid_core(state, scontext, scontext_len,
 						  sid, SECSID_NULL, GFP_KERNEL, 1);
 }
+
+int susfs_security_context_str_to_sid(struct selinux_state *state,
+				     const char *scontext, u32 *sid, gfp_t gfp)
+{
+	return susfs_security_context_to_sid(state, scontext, strlen(scontext),
+					     sid, gfp);
+}
 #endif // #ifdef CONFIG_KSU_SUSFS
 
 /**

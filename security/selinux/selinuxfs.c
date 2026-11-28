@@ -15,6 +15,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/jump_label.h>
 #include <linux/pagemap.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
@@ -52,6 +53,12 @@ extern void initialize_fake_status(void);
 /* defined in drivers/kernelsu/feature/selinux_hide.c */
 extern ssize_t my_write_context(struct file *file, char *buf, size_t size);
 extern ssize_t my_write_access(struct file *file, char *buf, size_t size);
+/* susfs in-kernel helpers, see kernel_patches/50_add_susfs_in_gki-android13-5.10.patch */
+extern int susfs_security_context_to_sid(struct selinux_state *state,
+				const char *scontext, u32 scontext_len, u32 *sid, gfp_t gfp);
+extern int susfs_security_context_str_to_sid(struct selinux_state *state,
+				const char *scontext, u32 *sid, gfp_t gfp);
+extern struct static_key_false fake_status_initialize_key;
 #endif
 
 enum sel_inos {
@@ -268,8 +275,10 @@ static int sel_open_handle_status(struct inode *inode, struct file *filp)
 
 #ifdef CONFIG_KSU_SUSFS
 	/* late initialisation once the policy is loaded (handled by KernelSU) */
-	if (!fake_status)
-		initialize_fake_status();
+	if (static_branch_unlikely(&fake_status_initialize_key)) {
+		if (!fake_status)
+			initialize_fake_status();
+	}
 #endif // #ifdef CONFIG_KSU_SUSFS
 	return 0;
 }
@@ -680,6 +689,42 @@ out:
 }
 
 #ifdef CONFIG_KSU_SUSFS
+static ssize_t susfs_sel_write_context(struct file *file, char *buf, size_t size)
+{
+	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
+	struct selinux_state *state = fsi->state;
+	char *canon = NULL;
+	u32 sid, len;
+	ssize_t length;
+
+	length = avc_has_perm(&selinux_state,
+			      current_sid(), SECINITSID_SECURITY,
+			      SECCLASS_SECURITY, SECURITY__CHECK_CONTEXT, NULL);
+	if (length)
+		goto out;
+
+	length = susfs_security_context_to_sid(state, buf, size, &sid, GFP_KERNEL);
+	if (length)
+		goto out;
+
+	length = security_sid_to_context(state, sid, &canon, &len);
+	if (length)
+		goto out;
+
+	length = -ERANGE;
+	if (len > SIMPLE_TRANSACTION_LIMIT) {
+		pr_err("SELinux: %s:  context size (%u) exceeds "
+			"payload max\n", __func__, len);
+		goto out;
+	}
+
+	memcpy(buf, canon, len);
+	length = len;
+out:
+	kfree(canon);
+	return length;
+}
+
 static ssize_t handle_sel_write_context(struct file *file, char *buf, size_t size)
 {
 	// apply to all app uids
@@ -936,20 +981,72 @@ out:
 }
 
 #ifdef CONFIG_KSU_SUSFS
+static ssize_t susfs_sel_write_access(struct file *file, char *buf, size_t size)
+{
+	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
+	struct selinux_state *state = fsi->state;
+	char *scon = NULL, *tcon = NULL;
+	u32 ssid, tsid;
+	u16 tclass;
+	struct av_decision avd;
+	ssize_t length;
+
+	length = avc_has_perm(&selinux_state,
+			      current_sid(), SECINITSID_SECURITY,
+			      SECCLASS_SECURITY, SECURITY__COMPUTE_AV, NULL);
+	if (length)
+		goto out;
+
+	length = -ENOMEM;
+	scon = kzalloc(size + 1, GFP_KERNEL);
+	if (!scon)
+		goto out;
+
+	length = -ENOMEM;
+	tcon = kzalloc(size + 1, GFP_KERNEL);
+	if (!tcon)
+		goto out;
+
+	length = -EINVAL;
+	if (sscanf(buf, "%s %s %hu", scon, tcon, &tclass) != 3)
+		goto out;
+
+	length = susfs_security_context_str_to_sid(state, scon, &ssid, GFP_KERNEL);
+	if (length)
+		goto out;
+
+	length = susfs_security_context_str_to_sid(state, tcon, &tsid, GFP_KERNEL);
+	if (length)
+		goto out;
+
+	security_compute_av_user(state, ssid, tsid, tclass, &avd);
+
+	length = scnprintf(buf, SIMPLE_TRANSACTION_LIMIT,
+			  "%x %x %x %x %u %x",
+			  avd.allowed, 0xffffffff,
+			  avd.auditallow, avd.auditdeny,
+			  avd.seqno, avd.flags);
+out:
+	kfree(tcon);
+	kfree(scon);
+	return length;
+}
+
 /*
  * Current BakaSU moved selinux_hide into the kernel and no longer exports
- * these; delegate to the stock handlers so the tree still links.  A KernelSU
- * build that does export them (HyperSU does) overrides these weak
- * definitions at link time.
+ * these; fall back to the in-kernel susfs handlers (see
+ * kernel_patches/50_add_susfs_in_gki-android13-5.10.patch).  A KernelSU build
+ * that does export them (HyperSU does) overrides these weak definitions at
+ * link time.
  */
 __weak ssize_t my_write_context(struct file *file, char *buf, size_t size)
 {
-	return sel_write_context(file, buf, size);
+	return susfs_sel_write_context(file, buf, size);
 }
 
 __weak ssize_t my_write_access(struct file *file, char *buf, size_t size)
 {
-	return sel_write_access(file, buf, size);
+	return susfs_sel_write_access(file, buf, size);
 }
 #endif // #ifdef CONFIG_KSU_SUSFS
 #ifdef CONFIG_KSU_SUSFS
