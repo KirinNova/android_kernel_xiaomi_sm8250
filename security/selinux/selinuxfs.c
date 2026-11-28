@@ -257,29 +257,11 @@ static int sel_open_handle_status(struct inode *inode, struct file *filp)
 	struct selinux_fs_info *fsi = file_inode(filp)->i_sb->s_fs_info;
 	struct page    *status = selinux_kernel_status_page(fsi->state);
 
-#ifdef CONFIG_KSU_SUSFS
-	if (likely(current_uid().val >= 10000 && ksu_selinux_hide_running)) {
-		void *data = fake_status;
-
-		if (data) {
-			filp->private_data = data;
-			return 0;
-		}
-	}
-#endif // #ifdef CONFIG_KSU_SUSFS
-
 	if (!status)
 		return -ENOMEM;
 
 	filp->private_data = status;
 
-#ifdef CONFIG_KSU_SUSFS
-	/* late initialisation once the policy is loaded (handled by KernelSU) */
-	if (static_branch_unlikely(&fake_status_initialize_key)) {
-		if (!fake_status)
-			initialize_fake_status();
-	}
-#endif // #ifdef CONFIG_KSU_SUSFS
 	return 0;
 }
 
@@ -879,20 +861,12 @@ static ssize_t sel_write_user(struct file *file, char *buf, size_t size);
 static ssize_t sel_write_member(struct file *file, char *buf, size_t size);
 
 static ssize_t (*const write_op[])(struct file *, char *, size_t) = {
-#ifdef CONFIG_KSU_SUSFS
-	[SEL_ACCESS] = handle_sel_write_access,
-#else
 	[SEL_ACCESS] = sel_write_access,
-#endif
 	[SEL_CREATE] = sel_write_create,
 	[SEL_RELABEL] = sel_write_relabel,
 	[SEL_USER] = sel_write_user,
 	[SEL_MEMBER] = sel_write_member,
-#ifdef CONFIG_KSU_SUSFS
-	[SEL_CONTEXT] = handle_sel_write_context,
-#else
 	[SEL_CONTEXT] = sel_write_context,
-#endif
 };
 
 static ssize_t selinux_transaction_write(struct file *file, const char __user *buf, size_t size, loff_t *pos)

@@ -7276,13 +7276,8 @@ static struct security_hook_list selinux_hooks[] __lsm_ro_after_init = {
 	LSM_HOOK_INIT(inode_permission, selinux_inode_permission),
 	LSM_HOOK_INIT(inode_setattr, selinux_inode_setattr),
 	LSM_HOOK_INIT(inode_getattr, selinux_inode_getattr),
-	#ifdef CONFIG_KSU_SUSFS
-	LSM_HOOK_INIT(inode_setxattr, handle_selinux_inode_setxattr),
-	LSM_HOOK_INIT(inode_post_setxattr, handle_selinux_inode_post_setxattr),
-	#else
 	LSM_HOOK_INIT(inode_setxattr, selinux_inode_setxattr),
 	LSM_HOOK_INIT(inode_post_setxattr, selinux_inode_post_setxattr),
-	#endif // #ifdef CONFIG_KSU_SUSFS
 	LSM_HOOK_INIT(inode_getxattr, selinux_inode_getxattr),
 	LSM_HOOK_INIT(inode_listxattr, selinux_inode_listxattr),
 	LSM_HOOK_INIT(inode_removexattr, selinux_inode_removexattr),
@@ -7353,11 +7348,7 @@ static struct security_hook_list selinux_hooks[] __lsm_ro_after_init = {
 	LSM_HOOK_INIT(d_instantiate, selinux_d_instantiate),
 
 	LSM_HOOK_INIT(getprocattr, selinux_getprocattr),
-#ifdef CONFIG_KSU_SUSFS
-	LSM_HOOK_INIT(setprocattr, handle_selinux_setprocattr),
-#else
 	LSM_HOOK_INIT(setprocattr, selinux_setprocattr),
-#endif // #ifdef CONFIG_KSU_SUSFS
 
 	LSM_HOOK_INIT(ismaclabel, selinux_ismaclabel),
 	LSM_HOOK_INIT(secctx_to_secid, selinux_secctx_to_secid),
