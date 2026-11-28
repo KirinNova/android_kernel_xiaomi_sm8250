@@ -363,6 +363,10 @@ extern bool __ksu_is_allow_uid_for_current(uid_t uid);
 extern int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode,
 			int *flags);
 #endif
+#ifdef CONFIG_KSU_MANUAL_HOOK
+extern int ksu_handle_faccessat(int *dfd, const char __user **filename, int *mode,
+				int *flags);
+#endif
 long do_faccessat(int dfd, const char __user *filename, int mode)
 {
 	const struct cred *old_cred;
@@ -418,6 +422,9 @@ long do_faccessat(int dfd, const char __user *filename, int mode)
 
 	old_cred = override_creds(override_cred);
 retry:
+#ifdef CONFIG_KSU_MANUAL_HOOK
+	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+#endif
 #ifdef CONFIG_KSU_SUSFS
 	fname = getname_flags(filename, lookup_flags, NULL);
 
